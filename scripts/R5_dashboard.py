@@ -45,6 +45,16 @@ def usd_to_try(usd: float | None) -> float | None:
     return None if usd is None else usd * TRY_RATE
 
 
+def price_fmt(v: float | None) -> str:
+    if v is None:
+        return '<span class="dim">-</span>'
+    if v >= 100:
+        return f"${v:,.2f}"
+    if v >= 1:
+        return f"${v:,.4f}"
+    return f"${v:,.6f}"
+
+
 def con() -> sqlite3.Connection:
     c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
     c.row_factory = sqlite3.Row
@@ -69,6 +79,16 @@ def snapshot() -> dict:
             "ORDER BY comb DESC LIMIT 8").fetchall()
         hist = [dict(r) for r in c.execute(
             "SELECT ts,data_age_s,open_trades,alert FROM health ORDER BY ts DESC LIMIT 12")]
+        open_ids = [t["trade_id"] for t in trades if t["status"] == "OPEN"]
+        latest_path: dict[str, dict] = {}
+        if open_ids:
+            qmarks = ",".join("?" * len(open_ids))
+            for r in c.execute(
+                    f"SELECT trade_id, mid, ts_ms, excursion_bp FROM path "
+                    f"WHERE trade_id IN ({qmarks}) AND ts_ms = "
+                    f"(SELECT MAX(ts_ms) FROM path p2 WHERE p2.trade_id = path.trade_id)",
+                    open_ids):
+                latest_path[r["trade_id"]] = dict(r)
         d = dict(
             db=str(DB), now=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             decision_points=g("SELECT COUNT(*) FROM decisions"),
@@ -82,7 +102,19 @@ def snapshot() -> dict:
             health=dict(health) if health else None,
             trades=trades, recent=recent, top=[dict(r) for r in top], hist=hist)
     for t in d["trades"]:
-        t["pnl_usd"] = bp_to_usd(t.get("net_bp"), t.get("simulated_position_usd"))
+        t["entry_price"] = t.get("simulated_entry_price")
+        if t["status"] == "OPEN":
+            lp = latest_path.get(t["trade_id"])
+            t["current_price"] = lp["mid"] if lp else None
+            t["price_asof_ms"] = lp["ts_ms"] if lp else None
+            t["pnl_bp"] = lp["excursion_bp"] if lp else None
+            t["pnl_is_final"] = False
+        else:
+            t["current_price"] = t.get("simulated_exit_price")
+            t["price_asof_ms"] = None
+            t["pnl_bp"] = t.get("net_bp")
+            t["pnl_is_final"] = True
+        t["pnl_usd"] = bp_to_usd(t["pnl_bp"], t.get("simulated_position_usd"))
         t["pnl_try"] = usd_to_try(t["pnl_usd"])
     if closed:
         n = len(closed)
@@ -161,6 +193,66 @@ def num(v, n=2, suf=""):
     return '<span class="dim">-</span>' if v is None else f"{v:.{n}f}{suf}"
 
 
+def svg_cum_chart(points: list[float], width: int = 640, height: int = 170) -> str:
+    """Cumulative net PnL (TL) across closed trades, in order. Inline SVG, no JS/CDN."""
+    if len(points) < 2:
+        return '<div class=note>Grafik için en az 2 kapanan işlem gerekiyor.</div>'
+    pad_l, pad_r, pad_t, pad_b = 50, 14, 14, 10
+    w, h = width - pad_l - pad_r, height - pad_t - pad_b
+    lo, hi = min(0.0, *points), max(0.0, *points)
+    span = (hi - lo) or 1.0
+
+    def x(i: int) -> float:
+        return pad_l + w * i / (len(points) - 1)
+
+    def y(v: float) -> float:
+        return pad_t + h - (v - lo) / span * h
+
+    poly = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(points))
+    last_up = points[-1] >= 0
+    color = "var(--ok)" if last_up else "var(--bad)"
+    labels = "".join(
+        f'<text x="4" y="{y(v)+3:.1f}" font-size="10" style="fill:var(--dim)">{v:,.0f}</text>'
+        for v in sorted({round(lo), 0, round(hi)}))
+    return (f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" '
+            f'style="display:block">'
+            f'<line x1="{pad_l}" y1="{y(0):.1f}" x2="{width-pad_r}" y2="{y(0):.1f}" '
+            f'style="stroke:var(--line)" stroke-dasharray="3,3"/>'
+            f'{labels}'
+            f'<polyline points="{poly}" fill="none" style="stroke:{color}" stroke-width="2"/>'
+            f'<circle cx="{x(len(points)-1):.1f}" cy="{y(points[-1]):.1f}" r="3.5" style="fill:{color}"/>'
+            f'</svg>')
+
+
+def svg_bar_chart(items: list[tuple[str, float]], width: int = 640, height: int = 170) -> str:
+    """Per-trade net result (bp), in order. Inline SVG, no JS/CDN."""
+    if not items:
+        return '<div class=note>Henüz kapanan işlem yok.</div>'
+    pad_l, pad_r, pad_t, pad_b = 8, 8, 10, 8
+    w, h = width - pad_l - pad_r, height - pad_t - pad_b
+    vals = [v for _, v in items]
+    lo, hi = min(0.0, *vals), max(0.0, *vals)
+    span = (hi - lo) or 1.0
+    zero_y = pad_t + h - (0 - lo) / span * h
+    n = len(items)
+    gap = w / n
+    bw = max(2.0, gap * 0.6)
+    bars = []
+    for i, (label, v) in enumerate(items):
+        cx = pad_l + gap * i + gap / 2
+        y_top = pad_t + h - (max(v, 0) - lo) / span * h
+        y_bot = pad_t + h - (min(v, 0) - lo) / span * h
+        color = "var(--ok)" if v >= 0 else "var(--bad)"
+        bars.append(
+            f'<rect x="{cx-bw/2:.1f}" y="{y_top:.1f}" width="{bw:.1f}" '
+            f'height="{max(y_bot-y_top,1):.1f}" rx="1.5" style="fill:{color}">'
+            f'<title>{esc(label)}: {v:+.1f}bp</title></rect>')
+    return (f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" '
+            f'style="display:block">'
+            f'<line x1="{pad_l}" y1="{zero_y:.1f}" x2="{width-pad_r}" y2="{zero_y:.1f}" '
+            f'style="stroke:var(--line)"/>' + "".join(bars) + '</svg>')
+
+
 STATUS_TR = {"OPEN": "AÇIK", "CLOSED": "KAPANDI"}
 REASON_TR = {"nonfinite": "veri yetersiz", "below_threshold": "eşik altında",
              "short_dropped": "düşüş sinyali (atlandı)"}
@@ -182,22 +274,26 @@ def page(d: dict) -> str:
     for t in d["trades"][:40]:
         st = t["status"]
         pill = "p-ok" if st == "OPEN" else "p-dim"
-        net = t.get("net_bp")
-        cls = "ok" if (net or 0) > 0 else ("bad" if net is not None else "dim")
+        pnl = t.get("pnl_bp")
+        cls = "ok" if (pnl or 0) > 0 else ("bad" if pnl is not None else "dim")
         entry_label = ENTRY_TR.get(t.get("entry_price_type"), t.get("entry_price_type"))
+        approx = "" if t.get("pnl_is_final") else "~"
+        cur_price = price_fmt(t.get("current_price"))
+        if st == "OPEN" and t.get("current_price") is None:
+            cur_price = '<span class="dim">veri bekleniyor</span>'
         rows.append(
             f"<tr><td>{ts(t['anchor_ms'])}</td><td><b>{esc(t['symbol'])}</b></td>"
+            f"<td><span class='pill {pill}'>{STATUS_TR.get(st, esc(st))}</span></td>"
             f"<td>+{esc(t['decision_minute'])} dk</td>"
+            f"<td>{price_fmt(t.get('entry_price'))}<div class=sub style='margin:0'>{esc(entry_label)}</div></td>"
+            f"<td>{cur_price}</td>"
             f"<td>{num(t.get('comb'),4)}</td>"
             f"<td>{num(t.get('spread_bp'),2,'bp')}</td>"
-            f"<td class=dim>{esc(entry_label)}</td>"
-            f"<td><span class='pill {pill}'>{STATUS_TR.get(st, esc(st))}</span></td>"
-            f"<td>{num(t.get('mfe_bp'),1,'bp')}</td><td>{num(t.get('mae_bp'),1,'bp')}</td>"
-            f"<td class={cls}>{num(net,1,'bp')}</td>"
-            f"<td class={cls}>{num(t.get('pnl_usd'),2,'$')}</td>"
-            f"<td class={cls}>{num(t.get('pnl_try'),0,' TL')}</td></tr>")
+            f"<td class={cls}>{approx}{num(pnl,1,'bp')}</td>"
+            f"<td class={cls}>{approx}{num(t.get('pnl_usd'),2,'$')}</td>"
+            f"<td class={cls}>{approx}{num(t.get('pnl_try'),0,' TL')}</td></tr>")
     trades_tbl = ("".join(rows) or
-                  "<tr><td colspan=12 class=dim>henüz deneme işlemi yok — sistem 10 coin "
+                  "<tr><td colspan=11 class=dim>henüz deneme işlemi yok — sistem 10 coin "
                   "üzerinde günde ortalama ~2,4 kez sinyal üretiyor</td></tr>")
 
     def trade_card(label: str, t: dict | None) -> str:
@@ -228,6 +324,17 @@ def page(d: dict) -> str:
         f"<td>{esc(x['open_trades'])}</td>"
         f"<td>{'<span class=bad>'+esc(x['alert'])+'</span>' if x['alert'] else '<span class=ok>sorun yok</span>'}</td></tr>"
         for x in d["hist"])
+
+    closed_sorted = sorted(
+        (t for t in d["trades"] if t["status"] == "CLOSED" and t.get("pnl_bp") is not None),
+        key=lambda t: t["anchor_ms"])
+    cum, running = [], 0.0
+    for t in closed_sorted:
+        running += t.get("pnl_try") or 0.0
+        cum.append(running)
+    bar_items = [(t["symbol"], t["pnl_bp"]) for t in closed_sorted[-24:]]
+    chart_cum = svg_cum_chart(cum)
+    chart_bar = svg_bar_chart(bar_items)
 
     tot_cls = "ok" if (cs.get("total_try") or 0) >= 0 else "bad"
     prog = min(100, round(100 * d["decision_points"] / max(60, 1))) if d["decision_points"] < 60 else 100
@@ -286,10 +393,19 @@ sabit {TRY_RATE:.2f} USD/TL kuruyla hesaplanır — gerçek para hareket etmez, 
 {trade_card('en düşük kârlı (en zararlı) işlem', cs.get('worst'))}
 </div>
 
+<h2>Grafikler</h2>
+<div class=card><div class=k>kümülatif net kâr/zarar (TL) — kapanan işlemler sırasıyla</div>
+<div style="margin-top:8px">{chart_cum}</div></div>
+<div class=card style="margin-top:10px"><div class=k>işlem başına net sonuç (bp) — son {len(bar_items)} kapanan işlem</div>
+<div style="margin-top:8px">{chart_bar}</div></div>
+<div class=sub style="margin-top:6px">yeşil = kârlı, kırmızı = zararlı · çubuğun üzerine gelince (mouse) coin adı ve bp değeri görünür</div>
+
 <h2>Deneme işlemleri (simülasyon)</h2>
-<div class=tw><table><thead><tr><th>zaman</th><th>coin</th><th>geçen süre</th><th>puan</th>
-<th>fiyat farkı</th><th>fiyat türü</th><th>durum</th><th>en iyi an</th><th>en kötü an</th>
-<th>net sonuç (bp)</th><th>net ($)</th><th>net (TL)</th></tr></thead>
+<div class=sub style="margin-top:-4px">"~" işaretli sayılar <b>açık</b> işlemler için anlık/tahmini değerdir (henüz kapanmadı,
+işlem maliyeti düşülmemiş) · işaretsiz sayılar kapanmış, kesinleşmiş sonuçtur</div>
+<div class=tw><table><thead><tr><th>zaman</th><th>coin</th><th>durum</th><th>geçen süre</th>
+<th>giriş fiyatı</th><th>güncel/çıkış fiyatı</th><th>puan</th><th>fiyat farkı</th>
+<th>kâr/zarar (bp)</th><th>kâr/zarar ($)</th><th>kâr/zarar (TL)</th></tr></thead>
 <tbody>{trades_tbl}</tbody></table></div>
 
 <h2>Son kontroller (sistem ne gördü?)</h2>
