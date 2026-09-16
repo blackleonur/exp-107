@@ -1,0 +1,48 @@
+[Unit]
+# EXP-107 shadow dashboard -- READ-ONLY view. RESEARCH ONLY.
+#
+# Opens shadow.db with SQLite mode=ro and serves HTML/JSON. It cannot write the database and
+# cannot trade: no exchange client, no credential, no order path. Separate process from the
+# runner, so a dashboard crash cannot affect data collection.
+#
+# It DOES open a TCP port (8440). The VPS has no firewall, so EXP107_TOKEN below is what
+# keeps the page private. Set it to a long random string before enabling this unit.
+Description=BorsaBot EXP-107 shadow dashboard (read-only, port 8440)
+Documentation=file:/opt/projects/borsabot-exp107/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/projects/borsabot-exp107/scripts
+ExecStart=/opt/projects/borsabot-exp107/.venv/bin/python R5_dashboard.py --port 8440 --host 0.0.0.0
+
+Restart=on-failure
+RestartSec=15
+
+# REQUIRED. Replace with your own long random string, then: systemctl daemon-reload
+Environment=EXP107_TOKEN=CHANGE_ME_TO_A_LONG_RANDOM_STRING
+Environment=PYTHONUNBUFFERED=1
+# No exchange credentials are needed or provided; blanked so a stray environment cannot
+# hand this process a trading-capable key.
+Environment=BINANCE_API_KEY=
+Environment=BINANCE_API_SECRET=
+
+# The dashboard only reads. Give it no write access at all, not even to its own tree.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/projects/borsabot-exp107
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=512M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=exp107-dash
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+{
+  "gate2": true,
+  "exp105": 38,
+  "replay": 38,
+  "intersection": 38,
+  "missing": 0,
+  "extra": 0,
+  "minute_agreement": 1.0,
+  "max_score_diff": 1.6913157097064868e-08,
+  "decision_points": 23040,
+  "raw_fires": 41
+}

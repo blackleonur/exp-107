@@ -1,0 +1,42 @@
+{
+  "system": "D = MODEL + RV30, LONG ONLY",
+  "fold": "2026-08-27",
+  "train_end": "2026-05-29",
+  "validation_end": "2026-08-27",
+  "decision_minutes": [
+    10,
+    30,
+    60,
+    120,
+    240,
+    480
+  ],
+  "rv_window": 30,
+  "percentile": 99.0,
+  "horizon_minutes": 1440,
+  "cost_bp": 14.38,
+  "PINNED_THRESHOLD": 0.964579822530864,
+  "exp105_threshold": 0.964579822530864,
+  "n_ref_model": 129600,
+  "n_ref_rv30": 129600,
+  "weights": [
+    0.5,
+    0.5
+  ],
+  "sha256": {
+    "booster_10.pkl": "cce859ba4636286b",
+    "booster_120.pkl": "0b50d501bcf007be",
+    "booster_240.pkl": "b041b1608e9675b6",
+    "booster_30.pkl": "c335c66af7f8dd6d",
+    "booster_480.pkl": "12859ba779b36c4c",
+    "booster_60.pkl": "f259b6f81320f358",
+    "isotonic_10.pkl": "5c179e68e0050363",
+    "isotonic_120.pkl": "59c24f3325c47de0",
+    "isotonic_240.pkl": "23b2e49221a08af4",
+    "isotonic_30.pkl": "dbc5597f114b5d62",
+    "isotonic_480.pkl": "04231cff06db4212",
+    "isotonic_60.pkl": "23d8fd6d8402507c",
+    "ref_model.npy": "12e8cd12f166ca45",
+    "ref_rv30.npy": "81d6de913de9ebf7"
+  }
+}

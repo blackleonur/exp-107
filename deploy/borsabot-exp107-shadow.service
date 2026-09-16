@@ -1,0 +1,49 @@
+[Unit]
+# EXP-107 D LONG-ONLY shadow runner -- RESEARCH ONLY, EXECUTION REHEARSAL.
+#
+# This service CANNOT place an order. It imports no exchange client, no signing code and no
+# credential, and calls only Binance public unauthenticated read-only endpoints
+# (/fapi/v1/klines, /fapi/v1/ticker/bookTicker). No API key, no secret, no trading permission,
+# no withdrawal permission.
+#
+# It opens no port, serves nothing, and touches no other unit, nginx, or the firewall. It
+# writes only inside its own directory.
+Description=BorsaBot EXP-107 shadow runner (research only, no orders, no port)
+Documentation=file:/opt/projects/borsabot-exp107/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/projects/borsabot-exp107/scripts
+ExecStart=/opt/projects/borsabot-exp107/.venv/bin/python R3_shadow_run.py run
+
+# Per the pre-declaration, a crash permits a SERVICE RESTART ONLY -- never a code, config or
+# strategy change. Every process start is recorded in the `restarts` table.
+Restart=on-failure
+RestartSec=30
+
+# No credentials are needed or provided. Explicitly blank the ones the other units use, so a
+# stray environment cannot hand this process a trading-capable key.
+Environment=BINANCE_API_KEY=
+Environment=BINANCE_API_SECRET=
+Environment=PYTHONUNBUFFERED=1
+
+# Containment: this service has no reason to write outside its own tree or to gain privilege.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/projects/borsabot-exp107
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=2G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=exp107-shadow
+
+[Install]
+WantedBy=multi-user.target
