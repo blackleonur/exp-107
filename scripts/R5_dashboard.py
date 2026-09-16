@@ -29,6 +29,20 @@ from urllib.parse import parse_qs, urlparse
 DB = Path(__file__).resolve().parents[1] / "shadow.db"
 TOKEN = os.environ.get("EXP107_TOKEN", "")
 COST_BP = 14.38
+# USD/TRY used only to translate the simulated (paper) bp PnL into TL for readability.
+# No money moves and no live FX feed is called -- set this to today's rate yourself.
+TRY_RATE = float(os.environ.get("EXP107_USDTRY", "42.0"))
+POSITION_SIZE_USD_DISPLAY = 1000  # matches POSITION_SIZE_USD in R3_shadow_run.py; display only
+
+
+def bp_to_usd(bp: float | None, position_usd: float | None) -> float | None:
+    if bp is None or position_usd is None:
+        return None
+    return bp / 1e4 * position_usd
+
+
+def usd_to_try(usd: float | None) -> float | None:
+    return None if usd is None else usd * TRY_RATE
 
 
 def con() -> sqlite3.Connection:
@@ -67,17 +81,32 @@ def snapshot() -> dict:
             last_decision=g("SELECT MAX(evaluated_at) FROM decisions", ""),
             health=dict(health) if health else None,
             trades=trades, recent=recent, top=[dict(r) for r in top], hist=hist)
+    for t in d["trades"]:
+        t["pnl_usd"] = bp_to_usd(t.get("net_bp"), t.get("simulated_position_usd"))
+        t["pnl_try"] = usd_to_try(t["pnl_usd"])
     if closed:
         n = len(closed)
         num = lambda k: [t[k] for t in closed if t.get(k) is not None]  # noqa: E731
         avg = lambda v: (sum(v) / len(v)) if v else None                # noqa: E731
+        priced = [t for t in closed if t.get("net_bp") is not None]
+        for t in priced:
+            t["pnl_usd"] = bp_to_usd(t["net_bp"], t.get("simulated_position_usd"))
+            t["pnl_try"] = usd_to_try(t["pnl_usd"])
+        best = max(priced, key=lambda t: t["net_bp"]) if priced else None
+        worst = min(priced, key=lambda t: t["net_bp"]) if priced else None
+        total_usd = sum(t["pnl_usd"] for t in priced) if priced else None
+        wins = [t for t in priced if t["net_bp"] > 0]
         d["closed_stats"] = dict(
             n=n, gross_mid=avg(num("gross_bp")), gross_exec=avg(num("gross_executable_bp")),
             net=avg(num("net_bp")), penalty=avg(num("execution_penalty_bp")),
             mfe=avg(num("mfe_bp")), mae=avg(num("mae_bp")),
-            duration=avg(num("duration_min")))
+            duration=avg(num("duration_min")),
+            total_usd=total_usd, total_try=usd_to_try(total_usd),
+            win_rate=(len(wins) / len(priced) * 100) if priced else None,
+            best=best, worst=worst)
     else:
-        d["closed_stats"] = dict(n=0)
+        d["closed_stats"] = dict(n=0, best=None, worst=None, total_usd=None, total_try=None,
+                                 win_rate=None)
     sp = [t["spread_bp"] for t in d["trades"] if t.get("spread_bp") is not None]
     d["spread"] = dict(n=len(sp), avg=(sum(sp) / len(sp)) if sp else None,
                        med=(sorted(sp)[len(sp) // 2] if sp else None))
@@ -164,10 +193,24 @@ def page(d: dict) -> str:
             f"<td class=dim>{esc(entry_label)}</td>"
             f"<td><span class='pill {pill}'>{STATUS_TR.get(st, esc(st))}</span></td>"
             f"<td>{num(t.get('mfe_bp'),1,'bp')}</td><td>{num(t.get('mae_bp'),1,'bp')}</td>"
-            f"<td class={cls}>{num(net,1,'bp')}</td></tr>")
+            f"<td class={cls}>{num(net,1,'bp')}</td>"
+            f"<td class={cls}>{num(t.get('pnl_usd'),2,'$')}</td>"
+            f"<td class={cls}>{num(t.get('pnl_try'),0,' TL')}</td></tr>")
     trades_tbl = ("".join(rows) or
-                  "<tr><td colspan=10 class=dim>henüz deneme işlemi yok — sistem 10 coin "
+                  "<tr><td colspan=12 class=dim>henüz deneme işlemi yok — sistem 10 coin "
                   "üzerinde günde ortalama ~2,4 kez sinyal üretiyor</td></tr>")
+
+    def trade_card(label: str, t: dict | None) -> str:
+        if not t:
+            return (f'<div class=card><div class=k>{label}</div>'
+                     f'<div class=v dim>henüz yok</div></div>')
+        net = t.get("net_bp")
+        cls = "ok" if (net or 0) > 0 else "bad"
+        return (f'<div class=card><div class=k>{label}</div>'
+                f'<div class="v {cls}">{num(net,1,"bp")}</div>'
+                f'<div class=sub style="margin:2px 0 0"><b>{esc(t["symbol"])}</b> · '
+                f'{ts(t["anchor_ms"])} · {num(t.get("pnl_usd"),2,"$")} · '
+                f'{num(t.get("pnl_try"),0," TL")}</div></div>')
 
     dec = []
     for r in d["recent"]:
@@ -186,6 +229,7 @@ def page(d: dict) -> str:
         f"<td>{'<span class=bad>'+esc(x['alert'])+'</span>' if x['alert'] else '<span class=ok>sorun yok</span>'}</td></tr>"
         for x in d["hist"])
 
+    tot_cls = "ok" if (cs.get("total_try") or 0) >= 0 else "bad"
     prog = min(100, round(100 * d["decision_points"] / max(60, 1))) if d["decision_points"] < 60 else 100
     thr = num(d['recent'][0]['threshold'],6) if d['recent'] else '0.964580'
     return f"""<!doctype html><html lang=tr><head><meta charset=utf-8>
@@ -227,14 +271,25 @@ veri yaşı: en son fiyat verisi kaç saniye önce geldi · fiyat farkı: alış
 <div class=card><div class=k>maliyet sonrası net sonuç</div><div class=v>{num(cs.get('net'),1,'bp')}</div></div>
 <div class=card><div class=k>ort. en iyi an (MFE)</div><div class=v>{num(cs.get('mfe'),1,'bp')}</div></div>
 <div class=card><div class=k>ort. en kötü an (MAE)</div><div class=v>{num(cs.get('mae'),1,'bp')}</div></div>
+<div class=card><div class=k>kazanma oranı</div><div class=v>{num(cs.get('win_rate'),0,'%')}</div></div>
+<div class=card><div class=k>toplam net kâr/zarar</div><div class="v {tot_cls}">{num(cs.get('total_usd'),2,'$')}</div></div>
+<div class=card><div class=k>toplam net kâr/zarar (TL)</div><div class="v {tot_cls}">{num(cs.get('total_try'),0,' TL')}</div></div>
 </div>
 <div class=sub style="margin-top:-8px">"maliyet sonrası net sonuç" asıl önemli sayıdır — {COST_BP}bp'lik tahmini işlem maliyeti düşüldükten sonra
-gerçekte cepte kalan kısmı gösterir.</div>
+gerçekte cepte kalan kısmı gösterir. TL karşılığı, işlem başına ${POSITION_SIZE_USD_DISPLAY} sanal pozisyon büyüklüğü ve
+sabit {TRY_RATE:.2f} USD/TL kuruyla hesaplanır — gerçek para hareket etmez, sadece "olsaydı ne olurdu" simülasyonudur.</div>
 {'<div class=note>Bu sayılar sadece <b>'+str(cs['n'])+'</b> işleme dayanıyor — güvenilir bir sonuç çıkarmak için yeterli değil. Sadece sistemin kayıtları doğru tuttuğunu gösterir, kârlı olduğunu değil.</div>' if 0 < cs['n'] < 5 else ''}
+
+<h2>En iyi ve en kötü işlem</h2>
+<div class=grid>
+{trade_card('en yüksek kârlı işlem', cs.get('best'))}
+{trade_card('en düşük kârlı (en zararlı) işlem', cs.get('worst'))}
+</div>
 
 <h2>Deneme işlemleri (simülasyon)</h2>
 <div class=tw><table><thead><tr><th>zaman</th><th>coin</th><th>geçen süre</th><th>puan</th>
-<th>fiyat farkı</th><th>fiyat türü</th><th>durum</th><th>en iyi an</th><th>en kötü an</th><th>net sonuç</th></tr></thead>
+<th>fiyat farkı</th><th>fiyat türü</th><th>durum</th><th>en iyi an</th><th>en kötü an</th>
+<th>net sonuç (bp)</th><th>net ($)</th><th>net (TL)</th></tr></thead>
 <tbody>{trades_tbl}</tbody></table></div>
 
 <h2>Son kontroller (sistem ne gördü?)</h2>
