@@ -131,3 +131,66 @@ hours is the expected behaviour of a 99th-percentile gate, not a broken system �
 The unit restarts on failure. **Per the pre-declaration, a crash permits a service restart
 only — no code, config or strategy change.** Every process start is logged to the `restarts`
 table.
+
+---
+
+## Continuous deploy via GitHub Actions
+
+`.github/workflows/deploy.yml` copies `scripts/` and `artifact/` to the VPS and restarts both
+units on every push to `main` that touches those paths (or on a manual
+`workflow_dispatch` run). It authenticates with an SSH key, never a password, and I cannot set
+this up end-to-end myself — outbound SSH from my environment is blocked and I cannot open your
+GitHub repo settings. Do these one-time steps yourself:
+
+### 1. Generate a dedicated deploy keypair (on your own machine, not the VPS)
+
+```
+ssh-keygen -t ed25519 -f deploy_key -C "github-actions-borsabot-exp107" -N ""
+```
+
+This gives you `deploy_key` (private) and `deploy_key.pub` (public).
+
+### 2. Authorize the public key on the VPS
+
+```
+ssh root@31.57.77.4
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo "<contents of deploy_key.pub>" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+Prefer not to hand a CI system root over SSH long-term? Create a scoped deploy user instead
+(`adduser deployer`), give it `authorized_keys` the same way, and grant it passwordless sudo
+for only the two restart commands via `visudo`:
+
+```
+deployer ALL=(root) NOPASSWD: /bin/systemctl restart borsabot-exp107-shadow, /bin/systemctl restart borsabot-exp107-dashboard, /bin/systemctl status borsabot-exp107-shadow, /bin/systemctl status borsabot-exp107-dashboard
+```
+
+then prefix the two `systemctl` lines in the workflow's `script:` with `sudo`, and also chown
+`/opt/projects/borsabot-exp107` to `deployer` so the scp step can write there.
+
+### 3. Add the three GitHub secrets
+
+Repo → Settings → Secrets and variables → Actions → New repository secret:
+
+| Secret | Value |
+|---|---|
+| `VPS_HOST` | `31.57.77.4` |
+| `VPS_USER` | `root` (or `deployer` if you made a scoped user) |
+| `VPS_SSH_KEY` | full contents of the **private** key `deploy_key` |
+
+### 4. Rotate the root password
+
+The password shared earlier in this chat is compromised (it went into a chat transcript in
+plaintext) — run `passwd` on the VPS regardless of which deploy user you choose.
+
+### 5. Test it
+
+Push a change under `scripts/` or `artifact/` to `main`, or trigger the workflow manually from
+the Actions tab. Watch the run logs; if it succeeds, `journalctl -u borsabot-exp107-shadow -f`
+on the VPS should show the service restart.
+
+Note: this workflow only pushes `scripts/` and `artifact/` (the runtime payload) — it does not
+re-copy `deploy/*.service` files or re-run `systemctl daemon-reload`. If you change a unit
+file, apply that one manually as in Step 5/6 of `VPS_KURULUM.md`.

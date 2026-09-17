@@ -1,0 +1,44 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "artifact/**"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy scripts and artifact to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "scripts/,artifact/"
+          target: "/opt/projects/borsabot-exp107"
+          overwrite: true
+
+      - name: Restart services
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            systemctl restart borsabot-exp107-shadow
+            systemctl restart borsabot-exp107-dashboard
+            sleep 2
+            systemctl status borsabot-exp107-shadow --no-pager
+            systemctl status borsabot-exp107-dashboard --no-pager
