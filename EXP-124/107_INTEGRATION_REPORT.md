@@ -436,3 +436,94 @@ already-tested next step — verify, and only import all-or-nothing.
 because the model was never actually supplied. What changed is that this repository now has a
 tested, ready mechanism to import it the moment it genuinely arrives, and a documented,
 unambiguous account of why "arrived" is not yet true.**
+
+---
+
+## 12. Session update — network path checked, confirmed closed (not VPS-specific)
+
+A follow-up message reasserted the artifacts are genuinely present on the VPS (with a fresh
+`sha256sum` run on the VPS itself, matching the same values already cross-checked in §11.2) and
+asked this session to check whether it can reach the VPS directly, without retrying a connection
+if not. It was checked, precisely, and not retried.
+
+### 12.1 What was tested
+
+1. **Raw TCP connect**, no authentication attempted, to the two ports this repository's own
+   `deploy/VPS_KURULUM.md` documents for that host (`31.57.77.4`):
+   ```
+   connect 31.57.77.4:22   (SSH)       -> TimeoutError: timed out
+   connect 31.57.77.4:8440 (dashboard) -> TimeoutError: timed out
+   ```
+2. **The egress proxy's own status endpoint** (`http://127.0.0.1:38417/__agentproxy/status`),
+   which this session's outbound HTTPS is routed through.
+3. **A neutral control request** — `curl https://example.com`, a generic, unrelated public site,
+   specifically to determine whether the block is about this VPS or about outbound access in
+   general:
+   ```
+   curl: (56) CONNECT tunnel failed, response 403
+   [agent-proxy] connect_rejected (the egress proxy denied the CONNECT — organization policy)
+   ```
+4. The same 403/`organization policy` rejection for `https://31.57.77.4/` and for plain
+   `http://31.57.77.4:8440/health` (timeout, same as the raw TCP test — plain HTTP isn't proxied
+   at all here, only HTTPS is).
+
+### 12.2 Conclusion
+
+**This is not a VPS-specific block. This session's network egress is restricted, by
+organization policy, to a small fixed allowlist** (PyPI, npm, GitHub's API surface, crates.io,
+Go's module proxy, Anthropic's own infrastructure — the exact list is in
+`/root/.ccr/README.md`'s `noProxy` entry). Even `example.com` — a completely generic site with
+no connection to this task — is rejected by the same policy. There is no route, with or without
+credentials, by which this session can pull arbitrary bytes from an external host that isn't on
+that allowlist. Per this environment's own operating rule ("do not retry organization policy
+denials — report them instead"), this was checked once, the result was unambiguous, and it was
+not retried.
+
+### 12.3 What this rules out, precisely
+
+- **Any method where this session fetches from the VPS** (SSH, SCP, HTTP, HTTPS, any port) — no
+  route exists, confirmed twice now (raw TCP in the previous session, TCP + HTTPS-via-proxy in
+  this one).
+- **Committing the `.pkl` files to any Git repository, public or private** — excluded by the
+  user's own explicit rule (item 6), independent of the network question.
+- **A public GitHub repository holding the files in any form** — excluded by the user's own
+  explicit rule (item 5).
+- **A GitHub Release asset on a repository this session can already reach** was considered as a
+  theoretical middle ground (a release asset isn't a Git commit/blob, so it wouldn't literally
+  violate "don't commit `.pkl` to Git" the way a tracked file would) — but downloading it would
+  still require this session to fetch a `githubusercontent.com`-style asset URL over raw HTTPS,
+  which is exactly the class of request §12.1's control test just showed gets rejected by the
+  same organization policy. This was **not attempted** — sending the user through a multi-step
+  VPS/GitHub process only to hit the same wall would waste their effort, and this report was
+  asked not to guess.
+
+### 12.4 What is actually left
+
+The one channel not ruled out by anything tested or any stated constraint is **a file transfer
+mechanism native to whatever client the user is using to talk to this session** (e.g., an
+attach/upload action in the chat interface itself) — because that would deliver bytes into this
+container without this session initiating any outbound network request at all. This session has
+no way to confirm from its own side whether that mechanism exists or how to invoke it; that is
+for the user to try from their end, or to ask the platform about if it isn't obviously available.
+
+**No VPS-side command sequence is given here, because the blocker is not on the VPS side.** The
+VPS does not need to do anything differently — the constraint is entirely on this session's
+inbound path, and no VPS command changes that.
+
+### 12.5 Status, restated precisely (nothing changed by this check)
+
+| Item | Result |
+|---|---|
+| Artifact transfer method | **None confirmed working.** Network path checked and closed by organization policy (not VPS-specific — proven with a neutral control host). Git-commit and public-repo paths excluded by the user's own rules. Untested/likely-blocked: GitHub release-asset download. Only unverified option: a client-native file attachment. |
+| 12/12 SHA-256 verification | **Not performed** — no file bytes present to hash (`artifact/` unchanged: `artifact.json`, `ref_model.npy`, `ref_rv30.npy` only) |
+| Model loading result | **Not performed** |
+| Decision horizons working | **None** — no model loaded |
+| `Exp107SignalProvider` real status | **Still `UNAVAILABLE`**, re-checked this session: `FileNotFoundError: ... 'artifact/booster_10.pkl'` |
+| Replay result | **Not performed** |
+| Test count | **347**, all passing (unchanged from the prior session — no code changed this turn, diagnostics only) |
+| `ENTER` reachability | **Still structurally unreachable.** `IGNORE`/`WAIT`/`HOLD` remain the only reachable decision actions; verified again this session, not merely assumed. |
+| Files changed this turn | **None** under `intelligence/` or `EXP-124/` beyond this report update. Nothing under `scripts/`, `artifact/`, `deploy/` touched (unchanged since Phase 1). |
+| Commit SHA (before this report's own commit) | `5717869` (`EXP-124: artifact import/verification mechanism (bytes still not received)`) |
+
+No result above is estimated. Where nothing could be measured, "not performed" is written
+instead of a number.
