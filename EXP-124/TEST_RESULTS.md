@@ -98,3 +98,52 @@ later phases consume these engines):
   per timeframe by a later orchestration phase), not vectorized across all 10 symbols at once —
   a deliberate simplicity-over-throughput choice at this scale (~2.4 EXP-107 signals/day; this
   is not a low-latency path).
+
+---
+
+## Phase 5 — volatility + magnitude engines
+
+**Scope**: `intelligence/engines/volatility_engine.py`, `intelligence/engines/magnitude_engine.py`,
+plus a shared `bucket_percentile()` added to `intelligence/engines/common.py` so both engines
+(and later ones) answer "is this reading unusual" the same way.
+
+**Isolation check**: `git diff --stat -- scripts/ artifact/ deploy/ PRE_DECLARATION.md` →
+empty.
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 90%]
+........                                                                 [100%]
+80 passed in 0.31s
+```
+
+Breakdown of the 25 new tests:
+- `test_common.py` (+6) — `bucket_percentile()` at each named bucket, inclusive-lower boundary
+  behavior at the three cutoffs (0.25/0.75/0.95), and `NaN`/`None` both mapping to `UNKNOWN`.
+- `test_volatility_engine.py` (12) — `compute()`'s `atr` and `atr_percentile` fields checked
+  for exact agreement with direct calls to `common.atr` / `common.rolling_percentile_rank` (a
+  wiring check, since the math itself is already covered in `test_common.py`), realized
+  volatility at exactly zero on a constant-price series and `NaN` before its own warm-up,
+  expansion/contraction flags on a deliberately separated abrupt range change (old-block and
+  new-block bars kept far enough apart that the two ATR readings being compared never overlap
+  the transition), neither flag on a stable range, and empty/short-series edge cases.
+- `test_magnitude_engine.py` (13) — move/pct-move arithmetic against a linear price series
+  where the expected answer is closed-form, `NaN` (never a fabricated value) when a horizon
+  exceeds available history including the exact boundary `n == horizon_bars`, correct sign of
+  the ATR-normalized move on an uptrend vs a downtrend, `state` checked for exact agreement with
+  `bucket_percentile()` on the engine's own `percentile_rank` output across a full random
+  series (not just one hand-picked bar), and `compute_all_horizons()` correctly reporting `None`
+  substance (a real snapshot object, `NaN` move, `UNKNOWN` state — not a missing key) for a
+  horizon longer than the held buffer.
+
+**Design choice flagged for the record**: `MAG_*` bucket thresholds and `volatility_engine`'s
+regime buckets both come from `bucket_percentile()`'s fixed 0.25/0.75/0.95 rank cutoffs applied
+to a *rolling* percentile computed from this system's own data — never from a specific number
+carried over from EXP-123 (which this repository does not have the underlying data for, per
+`CODEBASE_MAP.md` Blocker #1). This satisfies `ARCHITECTURE_PLAN.md` section 3.6 but means these
+bucket labels should not yet be read as calibrated against any real-world base rate — they
+describe "unusual relative to this symbol's own recent history," nothing more, until the
+feature registry (a later phase) has enough tracked outcomes to say whether that relative
+reading is actually informative.

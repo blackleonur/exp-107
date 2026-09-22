@@ -59,3 +59,26 @@ def rolling_percentile_rank(x: np.ndarray, window: int) -> np.ndarray:
             continue
         out[i] = float(np.sum(w <= w[-1]) - 1) / (window - 1) if window > 1 else 0.5
     return out
+
+
+# Shared LOW/NORMAL/HIGH/EXTREME bucketing, reused by volatility_engine and magnitude_engine so
+# both "is this reading unusual" questions are answered the same way. Thresholds are on a
+# ROLLING PERCENTILE RANK computed from this system's own accumulating data (never a fixed
+# magic-number cutoff copied from an EXP-108->123 result) -- per ARCHITECTURE_PLAN.md section
+# 3.6, no historical finding's specific numbers are hard-coded into production logic.
+PERCENTILE_BUCKET_EDGES = (0.25, 0.75, 0.95)  # LOW | NORMAL | HIGH | EXTREME
+
+
+def bucket_percentile(p: float) -> str:
+    """LOW / NORMAL / HIGH / EXTREME from a 0..1 percentile rank, or UNKNOWN if `p` is NaN --
+    an unmeasurable reading is reported as unmeasurable, never guessed into a bucket."""
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return "UNKNOWN"
+    lo, mid, hi = PERCENTILE_BUCKET_EDGES
+    if p < lo:
+        return "LOW"
+    if p < mid:
+        return "NORMAL"
+    if p < hi:
+        return "HIGH"
+    return "EXTREME"

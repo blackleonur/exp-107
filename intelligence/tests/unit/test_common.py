@@ -3,7 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from intelligence.engines.common import atr, rolling_percentile_rank, true_range
+from intelligence.engines.common import (atr, bucket_percentile, rolling_percentile_rank,
+                                         true_range)
 
 
 class TestTrueRange:
@@ -58,3 +59,28 @@ class TestRollingPercentileRank:
         x = [1, 2, 3]
         r = rolling_percentile_rank(x, window=5)
         assert np.all(np.isnan(r))
+
+
+class TestBucketPercentile:
+    def test_low(self):
+        assert bucket_percentile(0.10) == "LOW"
+
+    def test_normal(self):
+        assert bucket_percentile(0.50) == "NORMAL"
+
+    def test_high(self):
+        assert bucket_percentile(0.80) == "HIGH"
+
+    def test_extreme(self):
+        assert bucket_percentile(0.99) == "EXTREME"
+
+    def test_boundaries_are_inclusive_lower(self):
+        assert bucket_percentile(0.25) == "NORMAL"
+        assert bucket_percentile(0.75) == "HIGH"
+        assert bucket_percentile(0.95) == "EXTREME"
+
+    def test_nan_is_unknown(self):
+        assert bucket_percentile(float("nan")) == "UNKNOWN"
+
+    def test_none_is_unknown(self):
+        assert bucket_percentile(None) == "UNKNOWN"
