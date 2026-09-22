@@ -651,3 +651,89 @@ Breakdown of the 25 new tests:
   cached between 10-15s cycles until a NEW decision point arrives — this is the concrete
   implementation of the brief's "cached rolling data, incremental calculations, event
   timestamps, change detection" instruction, not just a documentation claim.
+
+---
+
+## Phase 15 — dashboard, adversarial suite, final reports
+
+**Scope**: `intelligence/dashboard/intelligence_dashboard.py`, `intelligence/tests/adversarial/test_adversarial_suite.py`,
+`EXP-124/LIVE_GATE.md`, `EXP-124/FINAL_REPORT.md`. One cosmetic fix to `intelligence/engines/common.py`
+(an expected-but-noisy `RuntimeWarning` on all-NaN true-range bars, silenced — the underlying
+NaN-propagation behavior itself was already correct and unchanged).
+
+**Isolation check**: empty.
+
+**Full test suite**:
+
+```
+$ python3 -m pytest intelligence/tests -q
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 85%]
+..................................................                       [100%]
+338 passed in 1.55s
+```
+
+**Adversarial suite** (`intelligence/tests/adversarial/test_adversarial_suite.py`, 39 tests) —
+one class per item on the task's explicit pre-report checklist:
+
+1. **Missing data** — a symbol with zero bars anywhere in the buffer, and a symbol with an
+   internal gap; neither crashes `evidence_collector.collect()` or the individual engines, and
+   the gap shows up as `NaN`, never a fabricated value. **A real fixture bug was caught here**:
+   the first draft of the test's own buffer-builder helper omitted absent symbols from the
+   `per` dict entirely, but `MarketBuffer._rebuild()`'s documented contract (matching
+   `scripts/R3_shadow_run.py`'s real `Bars.backfill()`/`poll()`) is that every one of the 10
+   `SYMBOLS` always has an entry, even an empty one — the helper was fixed, not `_rebuild()`.
+2. **Stale data** — a cycle run 30 days after the buffer's last bar produces `IGNORE`, never
+   `ENTER`, and never fabricates a fresh candle from old data.
+3. **Conflicting indicators** — a `STRONG_SUPPORT` and a `CONFLICT`, both from `HIGH`-confidence
+   features, net to exactly `0.0` → `DEFER` → `WAIT`, not a crash and not an arbitrary
+   tiebreak.
+4. **Multiple simultaneous opportunities** — five candidates ranked without collapsing into
+   "open everything," and five symbols independently landing in five different opportunity
+   states within one shared cycle.
+5. **Position already open** — an open position structurally blocks a second `ENTER` (reusing
+   the Phase 13 invariant), while every other symbol still gets its own snapshot in the same
+   `run_cycle()` call.
+6. **Signal reversal** — `CONFIRMED → INVALIDATED → WATCHING` transitions cleanly with no stuck
+   state, and a single reversed cycle does not instantly exit an open position (hysteresis).
+7. **Rapid signal changes** — 50 cycles of strict `CONFIRM`/`WEAKEN` alternation never
+   accumulates a streak long enough to trigger `REDUCE`, and 100 cycles of pseudo-random
+   fired/label churn through `OpportunityManager` complete without raising.
+8. **Insufficient timeframe history** — a 10-bar buffer produces a non-empty evidence bundle
+   that is mostly (but not exclusively) `UNKNOWN`.
+9. **Liquidity UNKNOWN** — `LIQUIDATION_DATA=UNKNOWN` run through the full `confirm()` path
+   contributes to `n_unknown`, contributes `0.0` to the score, and never produces `WEAKEN` or
+   `INVALIDATE`.
+10. **Binance/API failure** — retry exhaustion raises `BinanceClientError` cleanly, and — the
+    one genuinely new check this phase added — a `MarketBuffer.poll()` call against a client
+    that raises mid-fetch leaves the buffer's `grid`/`C` arrays byte-for-byte identical to
+    their pre-poll state (proven with `np.testing.assert_array_equal`, not just "no exception"),
+    since `poll()` only calls `_rebuild()` after every symbol's fetch has already succeeded.
+11. **Decision-memory restart/recovery** — a `DecisionRecord` written, the connection closed
+    (simulating a process restart), and a FRESH connection to the same file recovering the row
+    via `last_decision_for_symbol()`; a second "post-restart" write is proven to append rather
+    than replace.
+12. **No lookahead** — the newest, most rigorous check in this phase: for `candle_engine`,
+    `magnitude_engine`, and `structure_engine.find_swings()`, computing over the FULL series and
+    computing over a series truncated right after bar `i` produce IDENTICAL results at bar `i`
+    (structure's swings compared only among those already CONFIRMED by `i`, since an
+    unconfirmed swing is honestly not yet knowable either way). If any engine secretly read past
+    its current bar, truncating the series would change its answer at `i` — it does not.
+13. **No EXP-107 modification** — a tamper-evident SHA-256 hash of all 16 files EXP-107 owns
+    (`scripts/*.py`, `artifact/*.json`/`*.npy`, `deploy/*`, the root `PRE_DECLARATION.md`),
+    hashed once at Phase 1 and re-checked here; a 17th check confirms no `.pkl` file has been
+    added to `artifact/` in this session (Blocker #2 still holds).
+
+**Dashboard tests** (`test_intelligence_dashboard.py`, 5 tests): a missing database reported as
+an in-page error rather than a crash, latest-decision-per-symbol and decision-count aggregation
+verified against hand-written fixture rows, contradiction-count summation from the stored JSON
+evidence lists, the page rendering without exception, and a read-only guarantee (the database's
+mtime is provably unchanged across two `snapshot()` calls).
+
+**Cumulative total across all 15 phases: 338 tests, all passing, zero skipped, zero
+`xfail`.** The isolation check (`git diff --stat -- scripts/ artifact/ deploy/ PRE_DECLARATION.md`)
+has been run and reported empty at the end of every single phase from Phase 3 onward, and is now
+additionally enforced as a standing, automatically-run test
+(`Test13_NoExp107Modification`) rather than only a manual per-commit check.

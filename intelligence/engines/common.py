@@ -9,6 +9,8 @@ to well-known public definitions.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 
@@ -26,7 +28,12 @@ def true_range(high, low, close) -> np.ndarray:
     b = np.abs(high - prev_close)
     c = np.abs(low - prev_close)
     stacked = np.vstack([a, b, c])
-    with np.errstate(invalid="ignore"):
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        # a bar with NaN high/low/close (a genuine data gap) makes every column of `stacked`
+        # NaN at that position -- nanmax's "All-NaN slice" RuntimeWarning is expected there and
+        # its NaN result is exactly the correct, honest output, not something to silence by
+        # fabricating a fallback value.
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered")
         tr = np.nanmax(stacked, axis=0)
     tr[0] = a[0]
     return tr
