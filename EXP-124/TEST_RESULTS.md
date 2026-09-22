@@ -556,3 +556,98 @@ Breakdown of the 39 new tests:
   a future change could accidentally violate.
 - `journal.render()` is a pure formatter with no I/O — a later phase decides whether/where to
   persist its output, keeping the format itself trivially testable without a filesystem.
+
+---
+
+## Phase 14 — continuous cycle runner (10-15s loop)
+
+**Scope**: `intelligence/confirmation/evidence_collector.py` (wires all eight Phase 4-7 engines
+into typed `Evidence`), `intelligence/loop/cycle_runner.py` (the orchestrator itself).
+
+**Isolation check**: empty.
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 24%]
+........................................................................ [ 48%]
+........................................................................ [ 73%]
+........................................................................ [ 97%]
+......                                                                   [100%]
+294 passed in 1.23s
+```
+
+Breakdown of the 25 new tests:
+- `test_evidence_collector.py` (10) — every one of the eight engines represented in a
+  collected bundle, cross-sectional and BTC-regime evidence honestly `UNKNOWN` when their
+  optional inputs aren't supplied (never fabricated), `LIQUIDATION_DATA` always `UNKNOWN`, a
+  **regression test for a real unit bug caught while writing the cycle-runner tests** (see
+  below), cross-sectional evidence correctly turning `SUPPORT` for an aligned symbol and
+  `CONFLICT` for a divergent one when directions ARE supplied, direction-engine strength
+  scaling with confidence, and a fully empty buffer producing `UNKNOWN` everywhere rather than
+  crashing.
+- `test_cycle_runner.py` (15) — EXP-107 decision-point scheduling worked out by hand across
+  three cases (within the current hour, needing a one-hour lookback, needing it again from a
+  different starting offset — see the bug note below), caching proven by call-count (the SAME
+  decision point across two calls only triggers one `evaluate()`, a NEW decision point triggers
+  a second), an anchor not yet in the held buffer producing `UNAVAILABLE` without ever calling
+  `evaluate()` at all; then, run against the REAL (unmocked) `Exp107SignalProvider` — matching
+  `test_exp107_signal.py`'s own choice to exercise this repository's actual state — a full
+  cycle for one symbol structurally landing on `IGNORE`/`WATCHING` (never `ENTER`), a decision
+  row actually written to `decision_memory`, `previous_decision_id` correctly linking two
+  consecutive cycles for the same symbol, and the rendered journal text containing the expected
+  fields; finally, all ten symbols each getting an independent snapshot in one `run_cycle()`
+  call, and — directly exercising the brief's core "don't block other opportunities" requirement
+  at the orchestration level — one symbol with an open paper position producing a
+  HOLD/REDUCE/EXIT-family decision while a different symbol in the SAME cycle still reaches its
+  own independent `IGNORE`, plus `FeatureRegistry` rebuild correctness (empty when nothing is
+  resolved yet, non-empty once a decision's outcome has been recorded) and a final check that
+  `ccxt`/`binance.client` are absent from `sys.modules`.
+
+**Two real bugs were found and fixed while writing these tests, not left to be caught later**:
+
+1. **Unit mismatch in `evidence_collector.collect()`**: `magnitude_engine.latest()` was being
+   called against the 60-minute-RESAMPLED series (`ohlcv`, shared with structure/candle) using
+   `magnitude_horizon_bars=240` — but `magnitude_engine.py`'s own horizon convention (e.g.
+   `MAG_4H == 240`) is defined in 1-MINUTE bars, matching `scripts/d_features.py`'s own
+   convention of measuring everything directly in minutes over the native series, never over a
+   resampled candle. Applying a 240-bar horizon meant for 1-minute bars to 60-minute bars would
+   silently turn "4 hours" into "10 days," and with only ~600 native minutes of buffer this
+   would have quietly reported `MAGNITUDE_STATE=UNKNOWN` forever, without ever raising an
+   error. Fixed by resampling to the native 1-minute series specifically for the magnitude
+   call; `TestMagnitudeUsesNativeOneMinuteSeriesNotResampled` is a dedicated regression test for
+   this, checked against a buffer sized specifically to distinguish the two interpretations.
+2. **Scheduling logic in `cycle_runner._current_exp107_point()`**: the first draft only ever
+   checked the CURRENT hour's own anchor for eligible decision minutes and, on failure, fell
+   back to a hardcoded `(anchor - 1h, minute=480)` — which is wrong whenever the true eligible
+   minute at the lookback hour is something other than 480 (in the test case worked out by
+   hand, the correct answer was minute 60, not 480). This matters because decision minutes 60,
+   120, 240 and 480 can NEVER be found by checking only the current hour: by the time 60+
+   minutes have elapsed since an anchor, `now_ms`'s own hour-floor has already advanced past
+   that anchor. Fixed by searching backward hour-by-hour (up to 9 hours, covering the longest
+   480-minute decision offset) and returning the first anchor with at least one genuinely
+   eligible minute, using that anchor's latest eligible minute. `TestExp107Scheduling`'s three
+   cases are worked out arithmetically in the test file's own comments, and the two that
+   exercised this bug were failing against the pre-fix code (confirmed before the fix was
+   applied) and pass against the corrected version.
+
+**Design choices flagged for the record**:
+- `evidence_collector.py` uses ONE representative timeframe (60-minute) for structure/candle,
+  not a fan-out across all eleven timeframes the original brief lists (5m through 24h). This is
+  a deliberate scoping decision for this first working version, not an oversight — every engine
+  it calls already supports being called at any timeframe (`ARCHITECTURE_PLAN.md`'s multi-
+  timeframe design is unchanged), and wiring the rest in is mechanical repetition of the
+  pattern already established, left for a following iteration rather than inflating this
+  phase's diff. This is stated explicitly so `REPORT.md` doesn't imply full multi-timeframe
+  fan-out is already wired when it isn't.
+- `CycleRunner._registry()` rebuilds a `FeatureRegistry` from `decision_memory`'s resolved rows
+  every call, parsing each evidence string's feature name back out of its
+  `"source.feature=STRENGTH (weight=W)"` format. This is a simple first-pass attribution choice
+  (one `Outcome` per supporting-evidence entry on a resolved decision, none yet derived from
+  conflicting evidence) — reasonable, but one of several defensible designs; flagged here rather
+  than presented as the only correct approach.
+- EXP-107's own signal is fetched at most once per (anchor, minute) decision point per symbol,
+  cached between 10-15s cycles until a NEW decision point arrives — this is the concrete
+  implementation of the brief's "cached rolling data, incremental calculations, event
+  timestamps, change detection" instruction, not just a documentation claim.
