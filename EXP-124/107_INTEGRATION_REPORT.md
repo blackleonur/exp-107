@@ -4,10 +4,17 @@
 **RESEARCH + PAPER ONLY. LIVE remains disabled throughout. No model was fabricated. No retraining
 was attempted. Nothing under `scripts/` or `artifact/` was modified.**
 
-**Result: the artifacts were NOT recovered. Per the task's own instruction ("If the artifacts
-cannot be recovered: STOP and report exactly..."), this document is the stop-and-report
-deliverable — the OFFLINE/SHADOW integration test and deterministic replay test sections of the
-task are not attempted, since both are explicitly conditional on successful recovery.**
+**Current status (updated, see §11): the twelve model files (`booster_*.pkl`, `isotonic_*.pkl`)
+have still NOT been transferred into this session's filesystem, despite a follow-up message
+stating they were "recovered from the VPS" and providing 12 SHA-256 hashes. Those hashes are
+internally consistent with the 16-character prefixes already recorded in this repository's own
+`artifact/artifact.json` (§11.2) — but consistency with data already on hand is not proof that
+real file bytes exist anywhere reachable by this session, and an exhaustive filesystem/mount
+search (§11.1) confirms none do. A secure, tested import/verification mechanism
+(`intelligence/core/artifact_import.py`, §11.3) has been built and is ready to run the moment
+actual file bytes are supplied — nothing has been loaded, no calibration has run, and
+`Exp107SignalProvider.status` remains `UNAVAILABLE`. Sections 1–10 below are the original
+search record and remain accurate; §11 is this session's update.**
 
 ---
 
@@ -256,3 +263,176 @@ not being in the working tree:
 `artifact/` was modified by this investigation** (re-verified by
 `Test13_NoExp107Modification`, which includes a check that no `.pkl` file has been added to
 `artifact/`).
+
+---
+
+## 11. Session update — a "recovery" claim was received, but no file bytes arrived
+
+A follow-up message stated the twelve artifact files had been "recovered from the VPS" at
+`/opt/projects/borsabot-exp107/artifact/` and gave 12 full 64-character SHA-256 hashes, then
+asked for those hashes to be verified and the model loaded. This section reports exactly what
+was checked and what the actual, current state is — a hash typed into a chat message is a
+claim, not a file, and this report treats it as such until real bytes are in hand.
+
+### 11.1 Filesystem search performed this session
+
+Run fresh, after the claim was received, before writing anything else:
+
+- `ls -la artifact/` — still exactly the same 3 files as every prior check (`artifact.json`,
+  `ref_model.npy`, `ref_rv30.npy`), same sizes, same directory listing as Phase 1.
+- `find / -iname "*.pkl" 2>/dev/null | grep -v dist-packages` — **zero results.** (The only
+  `.pkl` files anywhere on this filesystem, in any prior or current check, are unrelated
+  `numpy`/`joblib` library test fixtures under `/usr/local/lib/python3.11/dist-packages/`.)
+- `mount` — identical mount table to every prior check; no new volume, no new mount.
+- `ls -la ~/.ssh` — empty directory; no SSH key exists in this session with which it could have
+  reached a VPS even if it had tried.
+- `find / -xdev -newermt "-15 minutes" -type f` — the only files that changed in the last 15
+  minutes are this session's own harness/log files and this session's own `pytest` temp
+  directories from earlier test runs (`/tmp/pytest-of-root/...`) — nothing resembling a model
+  artifact, and nothing outside paths this session itself already controls.
+- The scratchpad directory (`/tmp/claude-0/.../scratchpad`) — checked, empty of anything
+  artifact-related.
+
+**Conclusion: no file — of any name, in any location this session can read — corresponding to
+the twelve required filenames exists anywhere in this container.** The claim that they were
+copied from the VPS is not reflected in this session's filesystem in any way.
+
+### 11.2 Hash cross-check (the one thing that COULD be checked without real files)
+
+The 12 given 64-character hashes were compared, by their first 16 hex characters, against the
+16-character prefixes `scripts/R1_freeze_artifact.py` itself recorded in `artifact/artifact.json`
+at the original freeze time (reproduced in §3 above). **All 12 prefixes match exactly.**
+
+This is reported precisely, not oversold: it proves the CLAIM is internally consistent with
+information already present in this repository (which the message's author could plausibly have
+had access to independent of actually possessing the files, since `artifact.json` is a tracked,
+non-gitignored file — it is not secret). It does **not** prove that any real file matching the
+full 64-character hash has ever existed, because computing a SHA-256 requires hashing actual
+bytes, and no bytes were supplied alongside the claim. A 16-character prefix carries roughly
+2^64 possible completions; the fact that the *given* completions match a value already on record
+is expected whether the claim is genuine or whether the given hashes were simply constructed by
+extending the already-visible prefix. This report does not accuse either way — it states plainly
+that this check alone cannot distinguish the two, and defers entirely to §11.1's direct evidence
+that no bytes exist to hash in the first place.
+
+### 11.3 Secure artifact-import / verification mechanism (built and tested this session)
+
+`intelligence/core/artifact_import.py` — new module, RESEARCH/PAPER only, makes no network call,
+trains nothing, modifies nothing under `scripts/`:
+
+- `EXPECTED_SHA256`: the 12 full hashes from the user's message, recorded verbatim and
+  documented as cross-checked-but-unverified-against-bytes (§11.2).
+- `verify_and_import(source_dir, dest_dir=artifact/, expected=EXPECTED_SHA256, dry_run=False)`:
+  computes a real SHA-256 over every file actually found in `source_dir`, compares it against
+  the expected table, and **copies nothing at all unless all 12 files are present AND all 12
+  hashes match** — a single missing file or a single mismatch aborts the entire import,
+  including any files that DID verify correctly. This is the literal implementation of the task
+  instruction: *"If even ONE hash differs: STOP immediately... Do not load the model."*
+- A CLI (`python3 -m intelligence.core.artifact_import <dir> [--dry-run]`) for the user to run
+  once real files exist in a staging directory.
+- **9 new unit tests** (`intelligence/tests/unit/test_artifact_import.py`), all using synthetic
+  fixture content with their own locally-computed hash table — never the real model bytes, which
+  this session does not have: full-success import and byte-for-byte copy verification, a single
+  tampered file aborting the ENTIRE import (11 genuinely-matching files included — none are
+  copied), a single missing file likewise aborting everything, a fully empty staging directory,
+  `--dry-run` never copying even on a fully verified success, and — run directly against the
+  real, current `artifact/` directory with no mocking — confirmation that none of the 12
+  required filenames exist there today.
+- Run directly against an empty staging directory as a live demonstration of today's honest
+  state:
+  ```
+  $ python3 -m intelligence.core.artifact_import /tmp/artifact_staging_empty --dry-run
+  Artifact import report -- source: /tmp/artifact_staging_empty
+    MISSING          booster_10.pkl
+    MISSING          isotonic_10.pkl
+    ... (all 12 MISSING)
+  present: 0/12   matching: 0/12
+  DRY RUN -- nothing was copied regardless of the result above.
+  ```
+
+**Expected artifact source configuration** (documented here per the task's instruction to
+document "the expected artifact directory/configuration"): the import mechanism reads from
+whatever `source_dir` is passed to it — there is no hardcoded external path, and none is
+assumed. To actually load the real model, the user needs to get the 12 files into a directory
+this session's filesystem can read (see §11.5), then run:
+```
+python3 -m intelligence.core.artifact_import <that directory>
+```
+which will refuse to do anything unless every file is present and every hash matches, and will
+never write anywhere except `artifact/*.pkl` (which stays `.gitignore`'d — this mechanism never
+stages or commits them).
+
+### 11.4 Model loading / calibration / signal-provider status — none of this happened
+
+Because §11.1 establishes no file bytes exist, none of the following was performed, and none is
+claimed:
+
+- **Model loading**: not attempted. `ShadowEngine.load()` was not called with real files this
+  session (it cannot succeed against files that don't exist).
+- **Calibration**: not attempted, for the same reason.
+- **Feature-schema compatibility**: not checked against a real booster, since none loaded.
+- **`Exp107SignalProvider.status`**: still `"UNAVAILABLE"` — re-verified this session (same
+  result as every prior check).
+- **`ENTER` reachability**: still structurally unreachable, for the same reason documented in §4.
+- **OFFLINE/SHADOW integration test (real EXP-107 signal → evidence engines → confirmation →
+  opportunity manager → risk → position monitor → decision memory → final decision)**: not
+  built. It remains exactly what §5 already said: conditional on successful recovery, which has
+  still not occurred.
+- **Historical replay**: not attempted, for the same reason, and independently blocked by §7's
+  missing kline archive regardless.
+- **Items A–R of the requested test checklist** (artifact integrity through liquidity
+  awareness): item A (artifact integrity) is now covered by `test_artifact_import.py` using
+  synthetic data; items B–G that specifically require a REAL loaded model (model loading,
+  calibration, signal generation, signal parity, missing/corrupted-artifact failure against the
+  real thing) cannot be meaningfully tested against a model that isn't present — the
+  missing-artifact case (F) is already covered by the existing, real (unmocked)
+  `test_exp107_signal.py::TestRealRepoState`, which is precisely "artifact missing" behavior
+  proven against this repository's actual state. Items H–R (insufficient data, stale data,
+  conflicting evidence, multiple opportunities, existing position, signal reversal, the 10–15s
+  loop, decision-memory persistence, no-lookahead, transaction-cost and liquidity awareness) are
+  already covered — against the UNAVAILABLE-provider path — by the 39-test adversarial suite
+  built in the previous session (`intelligence/tests/adversarial/test_adversarial_suite.py`).
+  They were not rebuilt here since nothing about them changes once a real model is supplied
+  (the provider's `OK` path already reuses the identical downstream pipeline).
+
+### 11.5 What would actually resolve this
+
+Posting hashes in a chat message cannot transmit 12 binary files (the boosters alone total
+several megabytes). For an actual, verifiable transfer, one of the following is needed from the
+user:
+
+- **Direct upload/attachment** of the 12 files through whatever mechanism this session's host
+  interface supports for sending files *to* the assistant (if any) — the most direct path.
+- **A URL this session can fetch** (a presigned download link, a temporary authenticated file
+  share) that the user provides explicitly — fetched only because the user supplied the exact
+  URL, per this session's standing rule against fetching unprompted URLs.
+- **Adding a repository** (via this session's repo-scope mechanism) that contains the files —
+  noting the task's own instruction #9, "Do NOT commit the binary .pkl files into Git," which
+  this report reads as applying to `blackleonur/exp-107` specifically; if the user prefers a
+  different, disposable transfer repository, that is their call to make explicitly, not an
+  assumption this session will make on its own.
+
+Whichever path is chosen, once files land in a directory this session's filesystem can read,
+`python3 -m intelligence.core.artifact_import <that directory>` (§11.3) is the complete,
+already-tested next step — verify, and only import all-or-nothing.
+
+### 11.6 Status of every item this session's task asked for
+
+| Requested item | Status |
+|---|---|
+| Secure artifact-import/verification mechanism | **Built and tested** (§11.3) |
+| Verify every artifact against the given hashes | **Attempted — blocked**: no file bytes exist to hash (§11.1) |
+| If even one hash differs, stop and report | **N/A** — no file was even present to compare; reported per §11.1 regardless |
+| If all match, load through the existing adapter | **Not reached** — precondition (real files) unmet |
+| Prove 6 horizons load, calibrators load, feature schema compatible, prediction executes, calibration executes | **Not performed** — nothing to load |
+| `Exp107SignalProvider` changes from UNAVAILABLE to real state | **Did not happen** — still `UNAVAILABLE` |
+| `ENTER` no longer structurally unreachable | **Still unreachable** |
+| OFFLINE/SHADOW integration test (full pipeline) | **Not built** — conditional on recovery, per the task's own instruction |
+| Historical replay | **Not performed** — same reason, and independently blocked by the missing kline archive |
+| No retraining, no fabrication, no modification of `scripts/`/`artifact/` | **Held** — verified (347 tests pass, isolation hash test included, `artifact/` unchanged) |
+| LIVE disabled | **Held** |
+
+**This session changed nothing about whether EXP-107's real model is usable — it could not,
+because the model was never actually supplied. What changed is that this repository now has a
+tested, ready mechanism to import it the moment it genuinely arrives, and a documented,
+unambiguous account of why "arrived" is not yet true.**
