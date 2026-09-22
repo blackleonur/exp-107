@@ -490,3 +490,69 @@ Breakdown of the 19 new tests:
   (`would_adjust_sl_tp_note`, only on a `REDUCE` with a positive MFE) is explicitly prefixed
   "RESEARCH ONLY, not a real order" so a later report can never misread it as real SL/TP
   management capability, per `ARCHITECTURE_PLAN.md` section 5's named simplification.
+
+---
+
+## Phase 13 — decision memory + decision engine + journal
+
+**Scope**: `intelligence/memory/decision_memory.py`, `intelligence/decision/decision_engine.py`,
+`intelligence/decision/journal.py`.
+
+**Isolation check**: empty. (A found-and-fixed bug is noted below in `TestEmptyEvidenceLists`
+— caught by the tests themselves, not a scripts/ regression.)
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+.....................................................                    [100%]
+269 passed in 0.63s
+```
+
+Breakdown of the 39 new tests:
+- `test_decision_memory.py` (16) — write-then-read round trip including the JSON-encoded
+  evidence lists, `get_decision()`'s missing-id `None`, a duplicate `decision_id` raising
+  `sqlite3.IntegrityError` with the ORIGINAL row proven untouched afterward (the append-only
+  guarantee enforced at the database layer, not just by convention), a source-inspection check
+  that `write_decision()`'s SQL contains no `UPDATE` path at all, `update_outcome()` correctly
+  filling only the `outcome_*` columns while leaving `decision`/`reason` unchanged, the same
+  function raising `ValueError` (never a silent no-op) on an unknown `decision_id`, a
+  source-inspection check that it never assigns to the `decision` column, `last_decision_for_symbol()`'s
+  most-recent selection and per-symbol isolation, and `similar_setups()`'s resolved-only
+  filter, confirmation-label filter, most-recent-first ordering, and `limit`.
+- `test_decision_engine.py` (17) — the hard invariant get five dedicated tests: `ENTER`
+  unreachable when EXP-107 is `UNAVAILABLE`, unreachable when `OK` but not fired, unreachable
+  when fired `SHORT`, unreachable under EVERY confirmation label (`CONFIRM` included) when
+  `exp107.is_long_fire` is false, and only THEN a positive case proving `ENTER` is reachable
+  when both conditions actually hold. Also: `WEAKEN`/`DEFER` → `WAIT`, `INVALIDATE` → `IGNORE`,
+  a `CONFIRM` read under `HIGH` risk producing `WAIT` (not `ENTER`) with the risk label
+  attached, the mirrored low-risk case reaching `ENTER`; all four open-position branches
+  (`EXIT`/`REDUCE`/`HOLD` recommendations passed through, and — directly testing "never
+  re-enter an already-open position" — a fresh `CONFIRM` while a position is already open still
+  producing `HOLD`, never a second `ENTER`); `risk_label()`'s exact threshold boundaries; and
+  supporting/conflicting evidence lists passed through unchanged into the `Decision` record.
+- `test_journal.py` (6) — every required block present in the rendered text, the confidence
+  score formatted to two decimals, a `NaN` confidence formatted as `n/a` rather than crashing or
+  printing `nan`, the `(none)` placeholder used for empty evidence lists, the `NO SIGNAL`
+  placeholder when EXP-107 produced nothing this cycle, and the default portfolio-note
+  placeholder. **A real bug was caught here**: the first draft of `_decision()`'s test helper
+  used `support or [...]`, which silently replaced an intentionally-passed empty list with the
+  default non-empty one (`[] or x` evaluates to `x` in Python) — the two placeholder tests
+  failed against the correct `journal.py` implementation, and the helper (not `journal.py`) was
+  fixed to distinguish "no argument given" (`None`) from "explicitly empty" (`[]`).
+
+**Design choices flagged for the record**:
+- `decision_engine.decide()`'s hard invariant is enforced by control flow, not a bolt-on check:
+  `ENTER` appears in exactly one `return` statement, directly gated on
+  `exp107.is_long_fire`. With the model artifact still `UNAVAILABLE` (`CODEBASE_MAP.md` Blocker
+  #2), `is_long_fire` is never `True` anywhere in this repository's current state, so `ENTER`
+  is provably unreachable today — that is the correct behavior of this code right now, not a
+  gap the phase 14 cycle runner needs to work around.
+- `decision_memory`'s append-only guarantee is enforced at the SQLite layer (a `PRIMARY KEY`
+  violation on any attempted duplicate write), not left as an application-level convention that
+  a future change could accidentally violate.
+- `journal.render()` is a pure formatter with no I/O — a later phase decides whether/where to
+  persist its output, keeping the format itself trivially testable without a filesystem.
