@@ -277,3 +277,62 @@ EXP-107 must say LONG before anything downstream can ever ENTER — every later 
 that answer calls this property rather than re-deriving the fired/side condition itself, so
 there is exactly one place in the codebase where that rule could be gotten wrong, and it is
 covered by the four `TestExp107SignalIsLongFire` cases above.
+
+---
+
+## Phase 9 — confirmation layer (evidence, feature registry, confirmation engine)
+
+**Scope**: `intelligence/confirmation/evidence.py`, `intelligence/confirmation/feature_registry.py`,
+`intelligence/confirmation/confirmation_engine.py`.
+
+**Isolation check**: empty.
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 41%]
+........................................................................ [ 83%]
+.............................                                            [100%]
+173 passed in 0.56s
+```
+
+Breakdown of the 29 new tests:
+- `test_evidence.py` (3) — `EvidenceBundle.by_strength()` filtering, `.counts()` tallying, and
+  the empty-bundle case.
+- `test_feature_registry.py` (14) — the tail-dependency ratio on an even distribution vs. one
+  dominated by a single observation (and the empty/all-zero `NaN` cases), an unseen feature
+  reporting `UNSET`/weight `0.0`, a feature below `MIN_N_FOR_LOW` staying `UNSET` regardless of
+  its raw hit rate, a feature with plenty of data but zero edge staying capped at `LOW`
+  (never promoted just because `n` is large), `MEDIUM` and `HIGH` promotion each checked against
+  their exact `n`/edge thresholds, and — the test written specifically to guard the lesson from
+  EXP-120/121 — a feature with `HIGH`-qualifying sample size AND edge that is nonetheless capped
+  at `LOW` because nearly all of its apparent edge comes from one extreme observation. Also:
+  symbol/regime diversity counting, `all_stats()` coverage, and proof that the registry snapshots
+  its input list rather than referencing it live (mutating the caller's list after construction
+  does not change already-computed stats).
+- `test_confirmation_engine.py` (12) — all three ways `exp107.is_long_fire` can be false
+  (`UNAVAILABLE`, `OK` but not fired, `OK` fired but `SHORT`) each producing the explicit
+  `NO_SIGNAL` label rather than a silently-defaulted `DEFER`; an `UNSET`/never-scored feature's
+  support or conflict contributing exactly `0.0` to the score either way (proving "absence of
+  evidence is not evidence"); `UNKNOWN` evidence excluded from the score entirely and landing in
+  `n_unknown`, with the resulting label `DEFER` — never `WEAKEN` or `INVALIDATE` — directly
+  testing the brief's "do not convert UNKNOWN into a negative signal" rule; `CONFIRM` from a
+  `STRONG_SUPPORT` on a `HIGH`-confidence feature, and a second case landing exactly on
+  `CONFIRM_THRESHOLD`'s inclusive boundary; `WEAKEN` and `INVALIDATE` each checked against their
+  own threshold boundaries; the no-evidence-at-all `DEFER` default; and mixed support+conflict
+  evidence netting out to the arithmetically expected score.
+
+**Design choices flagged for the record**:
+- `confirm()` only ever runs when `exp107.is_long_fire` is true — reusing Phase 8's single
+  gate function rather than re-deriving the fired/side condition, so this layer cannot
+  accidentally confirm/weaken/invalidate a signal EXP-107 never actually produced.
+- `FeatureRegistry` is deliberately decoupled from `intelligence/memory/` (a later phase): it
+  consumes a plain `list[Outcome]`, however sourced, so the promotion logic that guards against
+  repeating EXP-120's unreplicated cells is fully unit-tested today without depending on a
+  decision-memory database schema that doesn't exist yet. When that phase lands, it only needs
+  to produce `Outcome` records — this registry does not change.
+- The evidence→score arithmetic (`STRENGTH_SIGN * registry.weight_for(feature)`) is
+  intentionally simple and fully auditable — every contribution is individually visible in
+  `weighted_support`/`weighted_conflict` for the eventual decision journal, rather than folded
+  into an opaque single number.
