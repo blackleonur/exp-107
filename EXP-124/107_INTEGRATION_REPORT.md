@@ -605,3 +605,62 @@ exactly `artifact.json`, `ref_model.npy`, `ref_rv30.npy`. `Exp107SignalProvider.
 `UNAVAILABLE`. `ENTER` is still structurally unreachable. Model loading, calibration, signal
 generation, and replay remain **not performed** — waiting on §13.1's channel, not on any more
 code.
+
+---
+
+## 14. Session update — real file bytes received; verified; analyzed (not yet imported)
+
+The user attached `exp107_models.zip` directly to a message in this conversation — §13.1's
+"primary" recommended channel, which turned out to be available. This is the first time in this
+entire investigation that actual file bytes reached this session.
+
+### 14.1 Transfer method that worked
+
+Direct file attachment to the conversation. The harness placed the archive at
+`/root/.claude/uploads/.../exp107_models.zip`, readable locally with no network call of any
+kind. Extracted to a scratch staging directory (never `artifact/` directly).
+
+### 14.2 Verification result: 12/12, genuinely, not from a claimed hash
+
+```
+$ python3 -m intelligence.core.artifact_import <staging dir> --dry-run
+present: 12/12   matching: 12/12
+```
+
+Every one of the 12 files' SHA-256, computed by this session directly from the actual received
+bytes, matches the full 64-character value already recorded via `artifact/artifact.json`'s
+provenance chain. This is qualitatively different from every prior "match" in this document
+(§11.2, §12): those compared a *claimed* hash string against a recorded prefix with no file to
+hash; this one hashed real, local bytes and got the expected answer. **`--dry-run` was used —
+the files were NOT copied into `artifact/`.** That step is still pending, deliberately, since
+this turn's request was scoped to analysis only (see `EXP-124/MODEL_ARTIFACT_ANALYSIS.md` for
+the full technical report).
+
+### 14.3 What was learned by actually loading the files
+
+Full detail in `EXP-124/MODEL_ARTIFACT_ANALYSIS.md`. Headline, stated as plainly as the task's
+own rules require: each of the six frozen boosters is a **single decision tree** (not an
+ensemble — `num_trees()==1` for all six, despite `n_estimators=300` being configured), and each
+one's validation `binary_logloss` at the point early stopping halted training sits within noise
+of `ln(2)` — the exact log-loss of predicting `p=0.5` for every sample. This is a fact about the
+raw classifier read directly off the artifact; it says nothing by itself about whether the
+frozen system's actual gate (a percentile-rank of `|raw−0.5|` combined with realized
+volatility, at the 99th percentile) has skill — that is a different, still-unanswered question,
+and the analysis document is explicit about not conflating the two.
+
+### 14.4 Status, restated precisely
+
+| Item | Result |
+|---|---|
+| Artifact transfer | **Succeeded** — direct chat attachment |
+| 12/12 SHA-256 verification | **Passed**, against real bytes |
+| Files copied into `artifact/` | **Not yet** — analysis-only this turn, by design |
+| Model loading via `ShadowEngine`/`Exp107SignalProvider` | **Not yet attempted** |
+| `Exp107SignalProvider.status` | **Still `UNAVAILABLE`** — unchanged, since nothing was imported |
+| `ENTER` reachability | **Still structurally unreachable** — unchanged, for the same reason |
+| Technical structure analysis | **Done** — `EXP-124/MODEL_ARTIFACT_ANALYSIS.md` |
+| Replay / OFFLINE-SHADOW integration test | Not yet — next step once import + load are explicitly requested |
+
+Nothing under `scripts/`, `artifact/`, or `deploy/` was touched. No model was retrained,
+modified, or fabricated. The 12 real files exist only in a scratch staging directory outside
+this repository at this point, not in `artifact/` and not committed anywhere.
