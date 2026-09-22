@@ -7,7 +7,10 @@ import hashlib
 
 import pytest
 
-from intelligence.core.artifact_import import REQUIRED_FILES, FileCheck, verify_and_import
+from intelligence.core.artifact_import import (ARTIFACT_JSON, EXPECTED_SHA256, REQUIRED_FILES,
+                                                ArtifactJsonInconsistency, FileCheck,
+                                                cross_check_against_artifact_json,
+                                                verify_and_import)
 
 
 def _write_all(staging_dir, content_by_name: dict[str, bytes]) -> dict[str, str]:
@@ -27,7 +30,7 @@ class TestAllPresentAllMatching:
         staging.mkdir()
         expected = _write_all(staging, {})
         dest = tmp_path / "artifact_dest"
-        report = verify_and_import(staging, dest_dir=dest, expected=expected)
+        report = verify_and_import(staging, dest_dir=dest, expected=expected, skip_artifact_json_check=True)
         assert report.imported is True
         assert report.all_present
         assert report.all_match
@@ -40,7 +43,7 @@ class TestAllPresentAllMatching:
         staging = tmp_path / "staging"
         staging.mkdir()
         expected = _write_all(staging, {})
-        report = verify_and_import(staging, dest_dir=tmp_path / "dest", expected=expected)
+        report = verify_and_import(staging, dest_dir=tmp_path / "dest", expected=expected, skip_artifact_json_check=True)
         assert "IMPORTED" in report.summary()
 
 
@@ -55,7 +58,7 @@ class TestSingleHashMismatchAbortsEverything:
         (staging / tampered).write_bytes(b"TAMPERED CONTENT")
 
         dest = tmp_path / "dest"
-        report = verify_and_import(staging, dest_dir=dest, expected=expected)
+        report = verify_and_import(staging, dest_dir=dest, expected=expected, skip_artifact_json_check=True)
 
         assert report.imported is False
         assert report.all_present is True     # all 12 files exist...
@@ -70,7 +73,7 @@ class TestSingleHashMismatchAbortsEverything:
         expected = _write_all(staging, {})
         tampered = REQUIRED_FILES[0]
         (staging / tampered).write_bytes(b"different bytes entirely")
-        report = verify_and_import(staging, dest_dir=tmp_path / "dest", expected=expected)
+        report = verify_and_import(staging, dest_dir=tmp_path / "dest", expected=expected, skip_artifact_json_check=True)
         bad = [c for c in report.checks if not c.matches]
         assert len(bad) == 1
         assert bad[0].filename == tampered
@@ -86,7 +89,7 @@ class TestMissingFileAbortsEverything:
         (staging / missing).unlink()
 
         dest = tmp_path / "dest"
-        report = verify_and_import(staging, dest_dir=dest, expected=expected)
+        report = verify_and_import(staging, dest_dir=dest, expected=expected, skip_artifact_json_check=True)
 
         assert report.imported is False
         assert report.all_present is False
@@ -108,7 +111,7 @@ class TestDryRun:
         staging.mkdir()
         expected = _write_all(staging, {})
         dest = tmp_path / "dest"
-        report = verify_and_import(staging, dest_dir=dest, expected=expected, dry_run=True)
+        report = verify_and_import(staging, dest_dir=dest, expected=expected, dry_run=True, skip_artifact_json_check=True)
         assert report.imported is False
         assert report.dry_run is True
         assert report.all_match is True   # verification still ran and would have succeeded
@@ -126,6 +129,58 @@ class TestRealRepoStateHasNothingToImport:
             assert not (ARTIFACT_DIR / name).exists(), (
                 f"{name} unexpectedly present -- artifact recovery may have actually happened; "
                 "re-run intelligence/core/exp107_signal.py's provider and update the report")
+
+
+class TestCrossCheckAgainstArtifactJson:
+    """Tests the LIVE enforcement (cross_check_against_artifact_json), not just the docstring
+    claim that EXPECTED_SHA256 was compared to artifact.json once, by hand."""
+
+    def test_real_expected_sha256_is_consistent_with_real_artifact_json(self):
+        # the default table (as actually supplied by the user this session) must pass against
+        # the real artifact.json -- this is the exact check verify_and_import() runs by default
+        cross_check_against_artifact_json()   # raises on failure; no exception == pass
+
+    def test_wrong_prefix_raises(self, tmp_path):
+        fake_json = tmp_path / "artifact.json"
+        bad = dict(EXPECTED_SHA256)
+        name = REQUIRED_FILES[0]
+        bad[name] = "0" * 64   # deliberately wrong
+        recorded = {n: EXPECTED_SHA256[n][:16] for n in REQUIRED_FILES}
+        import json
+        fake_json.write_text(json.dumps({"sha256": recorded}))
+        with pytest.raises(ArtifactJsonInconsistency, match=name):
+            cross_check_against_artifact_json(bad, artifact_json=fake_json)
+
+    def test_missing_entry_in_artifact_json_raises(self, tmp_path):
+        fake_json = tmp_path / "artifact.json"
+        recorded = {n: EXPECTED_SHA256[n][:16] for n in REQUIRED_FILES}
+        del recorded[REQUIRED_FILES[5]]
+        import json
+        fake_json.write_text(json.dumps({"sha256": recorded}))
+        with pytest.raises(ArtifactJsonInconsistency, match=REQUIRED_FILES[5]):
+            cross_check_against_artifact_json(EXPECTED_SHA256, artifact_json=fake_json)
+
+    def test_missing_artifact_json_file_raises(self, tmp_path):
+        with pytest.raises(ArtifactJsonInconsistency):
+            cross_check_against_artifact_json(EXPECTED_SHA256,
+                                              artifact_json=tmp_path / "nope.json")
+
+    def test_verify_and_import_runs_the_cross_check_by_default(self, tmp_path):
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        bad = dict(EXPECTED_SHA256)
+        bad[REQUIRED_FILES[0]] = "1" * 64
+        with pytest.raises(ArtifactJsonInconsistency):
+            verify_and_import(staging, dest_dir=tmp_path / "dest", expected=bad)
+
+    def test_skip_flag_bypasses_the_cross_check(self, tmp_path):
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        expected = _write_all(staging, {})   # synthetic, unrelated to real artifact.json
+        # would raise without skip_artifact_json_check=True; must NOT raise with it
+        report = verify_and_import(staging, dest_dir=tmp_path / "dest", expected=expected,
+                                   skip_artifact_json_check=True)
+        assert report.imported is True
 
 
 class TestNoRealHashesUsedInTests:

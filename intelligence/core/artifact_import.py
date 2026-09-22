@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -63,6 +64,40 @@ EXPECTED_SHA256: dict[str, str] = {
     "isotonic_240.pkl": "23b2e49221a08af4f665e5b732d47d98970220cb821bd81cdf110d735e4d20b4",
     "isotonic_480.pkl": "04231cff06db421293797123d5e5f999924bf73da68e053d9397c862afca5619",
 }
+
+
+class ArtifactJsonInconsistency(RuntimeError):
+    """Raised if EXPECTED_SHA256 (hashes supplied by a human in conversation) and
+    artifact/artifact.json (hashes the artifact's own author recorded at freeze time) ever
+    disagree -- a live, enforced check, not just a comment claiming they were compared once."""
+
+
+def cross_check_against_artifact_json(expected: dict[str, str] | None = None,
+                                      artifact_json: Path = ARTIFACT_JSON) -> None:
+    """Compares `expected`'s (default EXPECTED_SHA256) 64-char hashes, truncated to 16 chars,
+    against artifact.json's own recorded prefixes for the same 12 filenames. Raises
+    ArtifactJsonInconsistency on ANY disagreement or on a missing artifact.json/entry -- this
+    runs automatically at the start of verify_and_import(), so a stale or hand-edited
+    EXPECTED_SHA256 can never silently diverge from the artifact's own provenance record."""
+    expected = expected or EXPECTED_SHA256
+    if not artifact_json.is_file():
+        raise ArtifactJsonInconsistency(f"{artifact_json} does not exist -- cannot cross-check")
+    recorded = json.loads(artifact_json.read_text()).get("sha256", {})
+    problems = []
+    for name in REQUIRED_FILES:
+        given = expected.get(name)
+        rec = recorded.get(name)
+        if given is None:
+            problems.append(f"{name}: no hash supplied")
+            continue
+        if rec is None:
+            problems.append(f"{name}: artifact.json has no recorded prefix")
+            continue
+        if given[:16] != rec:
+            problems.append(f"{name}: given prefix {given[:16]} != artifact.json prefix {rec}")
+    if problems:
+        raise ArtifactJsonInconsistency(
+            "EXPECTED_SHA256 disagrees with artifact/artifact.json:\n  " + "\n  ".join(problems))
 
 
 @dataclass(frozen=True)
@@ -129,12 +164,19 @@ def _sha256_of(path: Path) -> str:
 
 def verify_and_import(source_dir: Path, dest_dir: Path = ARTIFACT_DIR,
                       expected: dict[str, str] | None = None,
-                      dry_run: bool = False) -> ImportReport:
+                      dry_run: bool = False, skip_artifact_json_check: bool = False) -> ImportReport:
     """Checks all 12 required files in `source_dir` against `expected` (defaults to
     EXPECTED_SHA256). Copies NOTHING unless every single file is present AND every single hash
     matches -- a partial or mismatched set aborts the whole import, verified files included, so
-    a caller never ends up with 11 genuine files and 1 silently-skipped bad one."""
+    a caller never ends up with 11 genuine files and 1 silently-skipped bad one.
+
+    Before touching any file, cross-checks `expected` against artifact/artifact.json's own
+    recorded prefixes (see cross_check_against_artifact_json()) and raises
+    ArtifactJsonInconsistency if they disagree -- set skip_artifact_json_check=True only in
+    tests that intentionally use a synthetic hash table unrelated to the real artifact.json."""
     expected = expected or EXPECTED_SHA256
+    if not skip_artifact_json_check:
+        cross_check_against_artifact_json(expected)
     source_dir = Path(source_dir)
     checks: list[FileCheck] = []
     for name in REQUIRED_FILES:

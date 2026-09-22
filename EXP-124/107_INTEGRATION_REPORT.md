@@ -527,3 +527,81 @@ inbound path, and no VPS command changes that.
 
 No result above is estimated. Where nothing could be measured, "not performed" is written
 instead of a number.
+
+---
+
+## 13. Session update — importer hardened, recommended transfer channel identified
+
+A follow-up message asked, before any more code: (a) what manual transfer mechanism is actually
+compatible with this session's sandbox restrictions, and (b) to inspect and reuse the existing
+`artifact_import.py` rather than duplicate it. Both are answered here. **No SSH/network attempt
+was made this turn — none was needed to answer either question**, per the explicit instruction
+not to retry.
+
+### 13.1 Recommended transfer channel, and why it's the only one that fits
+
+Every network-based channel is closed, for reasons already established and not retested this
+turn: outbound is policy-restricted to a small fixed allowlist (§12), and inbound is equally
+closed — this container exposes no listening port and has no stable address the VPS could push
+to, so the restriction is symmetric, not just "I can't reach out."
+
+That leaves exactly one channel that isn't a network path at all: **the conversation itself.**
+
+1. **Primary — direct file attachment** in the chat, if the client supports arbitrary (non-
+   image) file uploads. The harness would place the bytes on local disk for this session to read
+   directly; no outbound request is made, so none of §12's restrictions apply.
+2. **Fallback — base64-encoded paste**, per file, as plain conversation text, decoded locally
+   with stdlib `base64`. Also involves no network call. Practicality depends on file size
+   (isotonic calibrators are typically small; boosters may be larger) — worth checking `ls -la`
+   on the VPS before attempting.
+
+Ruled out, explicitly: git commit of `.pkl` files (user's own rule), any public repository
+(user's own rule), and a GitHub release-asset download (would still require an outbound HTTPS
+fetch to a `githubusercontent.com`-style host, which §12's control test already showed gets
+rejected by the same organization policy — not attempted, to avoid sending the user through a
+multi-step setup likely to fail the same way).
+
+### 13.2 `artifact_import.py` — inspected, reused, not duplicated
+
+The existing module already satisfied 5 of the 6 stated requirements (accepts a manual-transfer
+staging directory, computes real SHA-256, refuses partial imports, refuses any hash mismatch,
+keeps files outside Git since `artifact/*.pkl` stays covered by the existing `.gitignore`, and —
+once imported — places files at the exact path `ShadowEngine.load()` already expects, with zero
+changes to `scripts/`). One requirement — "verify against `artifact/artifact.json`" — was
+previously only a documented claim (a comment stating the two had been compared once, by hand,
+in a prior session) rather than a live, enforced check. That gap is now closed:
+
+- `cross_check_against_artifact_json()` (new): loads `artifact/artifact.json`'s own recorded
+  `sha256` prefixes and compares them against `EXPECTED_SHA256`'s 64-character hashes (truncated
+  to the same 16 characters) for all 12 filenames. Raises `ArtifactJsonInconsistency`, naming
+  the exact file and the exact mismatch, on any disagreement, missing entry, or missing
+  `artifact.json`.
+- `verify_and_import()` now **runs this check automatically, before touching any file**, unless
+  a caller explicitly opts out with `skip_artifact_json_check=True` (used only by this module's
+  own tests, which intentionally use synthetic, unrelated hash tables — never by the CLI or by
+  any real import).
+- Confirmed passing against the REAL `artifact/artifact.json` in this repository: the
+  `EXPECTED_SHA256` table (as given across this session's messages) is live-verified consistent
+  with it, not just claimed to have been checked once.
+
+**6 new tests** (`TestCrossCheckAgainstArtifactJson`): the real table against the real
+`artifact.json` (passes), a deliberately wrong prefix (raises, names the file), a missing
+`artifact.json` entry (raises, names the file), a missing `artifact.json` file entirely
+(raises), `verify_and_import()` invoking the check by default and raising before any file I/O
+when given a bad table, and the `skip_artifact_json_check=True` escape hatch working for
+synthetic test fixtures. **Total: 353 tests, all passing** (347 + 6 new; the 9 pre-existing
+`artifact_import.py` tests were updated to pass `skip_artifact_json_check=True` where they use
+synthetic hash tables, so they keep testing what they always tested rather than tripping the new
+check on unrelated fixture data).
+
+Nothing about the module's core guarantees changed: all-or-nothing import, real SHA-256 over
+real bytes, no network call, no training, no fabrication, `artifact/`, `scripts/`, `deploy/`
+still byte-identical to Phase 1.
+
+### 13.3 Still true, restated
+
+**No file bytes have been transferred into this session by any means.** `artifact/` still holds
+exactly `artifact.json`, `ref_model.npy`, `ref_rv30.npy`. `Exp107SignalProvider.status` is still
+`UNAVAILABLE`. `ENTER` is still structurally unreachable. Model loading, calibration, signal
+generation, and replay remain **not performed** — waiting on §13.1's channel, not on any more
+code.
