@@ -1,0 +1,6 @@
+# EXP-124 intelligence layer -- research/paper only, no trading libraries.
+# Deliberately excludes pandas/polars in any process that will also load EXP-107's LightGBM
+# artifact (see scripts/shadow_engine.py and R2_gate2_replay.py docstrings: LightGBM 4.7.0
+# segfaults in this environment when pandas/polars have been imported in the same process).
+numpy>=1.26
+pytest>=8.0
