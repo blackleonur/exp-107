@@ -438,3 +438,55 @@ Breakdown of the 22 new tests:
   Risk management stays structurally separate from signal generation: nothing in this module
   can promote a candidate into a decision — it only ever feeds `ranking.py`'s `risk_penalty`
   input and, later, the Decision Engine's RISK field.
+
+---
+
+## Phase 12 — position monitor + position decision
+
+**Scope**: `intelligence/position/position_monitor.py`, `intelligence/position/position_decision.py`.
+
+**Isolation check**: empty.
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 31%]
+........................................................................ [ 62%]
+........................................................................ [ 93%]
+..............                                                           [100%]
+230 passed in 0.52s
+```
+
+Breakdown of the 19 new tests:
+- `test_position_monitor.py` (10) — the first update seeding MFE/MAE to the current
+  unrealized PnL, MFE tracking a running max and MAE a running min across a multi-step path
+  (including a case where price reverses twice, proving both extremes are remembered
+  independently rather than only the most recent excursion), `n_updates` incrementing every
+  call, `remove()` clearing tracked state, and — a case written specifically to catch state
+  leakage — a fresh position opened on the same symbol AFTER a `remove()` correctly starting at
+  MFE=0 rather than inheriting the previous (closed) position's extremes, plus two symbols
+  tracked with fully independent running extremes.
+- `test_position_decision.py` (9) — a single `WEAKEN` or single `INVALIDATE` both staying
+  `HOLD` (the hysteresis itself, directly testing the brief's "confidence 0.61 → 0.60" rule),
+  `REDUCE` reached at the exact configured streak threshold and staying `HOLD` one cycle short
+  of it, an intervening `CONFIRM` resetting an in-progress `WEAKEN` streak back to zero, `EXIT`
+  reached at its own threshold and taking priority over `REDUCE` when `INVALIDATE` reads
+  interrupt a `WEAKEN` streak (because the weaken counter is reset the moment invalidation
+  reads start appearing), `HOLD`/most `REDUCE` cases carrying an empty
+  `would_adjust_sl_tp_note` while the one case that does populate it is checked for containing
+  the literal words "RESEARCH ONLY" and "not a real order", two symbols proven to hold fully
+  independent streak counters, and `remove()` clearing a symbol's streak so a later decision on
+  the same symbol starts fresh rather than continuing a stale count.
+
+**Design choices flagged for the record**:
+- Both modules track state PER SYMBOL, incrementally, across calls — MFE/MAE and the
+  hysteresis streaks are running values updated on each `update()`/`decide()` call, never
+  recomputed from a re-fetched history, matching the brief's "cached rolling data, incremental
+  calculations" instruction ahead of the continuous-loop phase that will call these every cycle.
+- `position_decision.py` never emits a `MOVE_SL`/`MOVE_TP` recommendation as if EXP-107 had a
+  real stop-loss or take-profit to move — it has neither (`CODEBASE_MAP.md` section 2.4, fixed
+  24-hour time exit only). The one place a stop-distance-like number is mentioned
+  (`would_adjust_sl_tp_note`, only on a `REDUCE` with a positive MFE) is explicitly prefixed
+  "RESEARCH ONLY, not a real order" so a later report can never misread it as real SL/TP
+  management capability, per `ARCHITECTURE_PLAN.md` section 5's named simplification.
