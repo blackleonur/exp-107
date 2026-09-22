@@ -336,3 +336,55 @@ Breakdown of the 29 new tests:
   intentionally simple and fully auditable — every contribution is individually visible in
   `weighted_support`/`weighted_conflict` for the eventual decision journal, rather than folded
   into an opaque single number.
+
+---
+
+## Phase 10 — opportunity manager + ranking
+
+**Scope**: `intelligence/opportunity/opportunity_manager.py`, `intelligence/opportunity/ranking.py`.
+
+**Isolation check**: empty.
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 38%]
+........................................................................ [ 76%]
+.............................................                            [100%]
+189 passed in 0.48s
+```
+
+Breakdown of the 16 new tests:
+- `test_opportunity_manager.py` (10) — a fresh symbol starting `WATCHING`; the full lifecycle
+  `WATCHING → CANDIDATE → CONFIRMED → OPEN → WEAKENING → EXIT_CANDIDATE → WATCHING` driven
+  step-by-step by `(exp107_fired_long, confirmation_label, has_open_position)` inputs; proof
+  that `history` is append-only and an earlier entry is never mutated by a later transition;
+  `INVALIDATED` shown to be non-sticky (it clears back to `WATCHING` once EXP-107 stops firing,
+  and a fresh firing afterward can become `CANDIDATE` again — never permanently blacklisted);
+  the `cycles_in_state` counter resetting on a real transition vs. incrementing when the state
+  is unchanged; and — the test directly exercising the brief's core requirement (sections
+  15–16) — five symbols updated with five different inputs in the same "cycle" (one already
+  `OPEN`, one newly `CONFIRMED`, one `CANDIDATE`, one `WATCHING`, one `INVALIDATED`) landing in
+  five independently-correct states, plus proof that updating one symbol never reads or
+  mutates another symbol's entry.
+- `test_ranking.py` (6) — highest-score-first ordering, the empty-input and single-candidate
+  cases, a risk penalty both reducing `net_score` and actually reordering two candidates (with
+  the raw `confirmation_score` preserved for audit even though `net_score` changed), a missing
+  penalty defaulting to `0.0` rather than being fabricated, the cost/symbol-name tiebreak being
+  deterministic across repeated calls with identical input, and the `reason` string only
+  mentioning `risk_penalty` when one was actually applied.
+
+**Design choices flagged for the record**:
+- `OpportunityManager.update()` takes `has_open_position` as an INPUT, not something it
+  decides — position lifecycle stays the Position Monitor's job (a later phase); this module
+  only reacts to it. This keeps the state machine testable today without a real position-
+  tracking implementation existing yet.
+- `rank_opportunities()` treats `confirmation_score` (evidence-score units) and `cost_bp`
+  (price-move units) as genuinely different units and never sums them — `cost_bp` is reported
+  per candidate and used only as a secondary sort key, so nothing here pretends to know a
+  score-to-basis-points exchange rate it hasn't measured.
+- Neither module produces an ENTER/EXIT decision by itself — `OpportunityState.CONFIRMED` and
+  a high `rank_opportunities()` position are both still only INPUTS to the eventual Decision
+  Engine (a later phase), consistent with the brief's "do NOT automatically enter every
+  opportunity" instruction.
