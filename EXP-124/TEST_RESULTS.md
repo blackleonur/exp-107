@@ -212,3 +212,68 @@ in `rolling_correlation()`.
 - `regime_engine` does not reproduce or assume EXP-116/117's finding that BTC relates to
   EXP-107's D signal (that finding's underlying data is Blocker #1, not in this repository) —
   it computes independent, freshly-defined regime evidence from live data only.
+
+---
+
+## Phase 7 — independent direction estimator (secondary evidence)
+
+**Scope**: `intelligence/engines/direction_engine.py`.
+
+**Isolation check**: empty.
+
+**Unit tests** (part of the combined run below): 6 tests in `test_direction_engine.py` —
+unanimous agreement across three timeframes producing `confidence=1.0`/`uncertainty=0.0`, the
+mirrored downtrend case, `UNKNOWN` (never a fabricated LONG/SHORT) on an empty buffer, an
+explicit assertion that `UNKNOWN` is never converted into a directional read, the sample-size
+confidence penalty when only 1 of 2 requested timeframes has enough history, and a
+hand-constructed disagreement case (documented arithmetic in the test's own comments: a
+1-minute-bar dip just large enough to flip the 1-minute read negative while staying too small
+to flip the 5-minute/15-minute bucket reads) proving the majority vote and the
+`conflicting_factors` list both behave correctly when timeframes genuinely disagree.
+
+**Design choice flagged for the record**: this engine is an explicitly simple, documented
+multi-timeframe majority vote — not a trained model, and not a reproduction of any EXP-108→123
+model (their code/data are Blocker #1, not in this repository). `ARCHITECTURE_PLAN.md`'s hard
+invariant holds: this module's output is SECONDARY evidence only and cannot, by itself, produce
+an ENTER decision — see Phase 8's `Exp107Signal.is_long_fire`, the one function in the whole
+package permitted to answer that question.
+
+---
+
+## Phase 8 — read-only EXP-107 adapter
+
+**Scope**: `intelligence/core/exp107_signal.py`.
+
+**Isolation check**: empty. Zero lines changed in `scripts/shadow_engine.py` or
+`scripts/d_features.py` — `Exp107SignalProvider` imports and calls `ShadowEngine` verbatim.
+
+**Unit tests** (part of the combined run below): 13 tests in `test_exp107_signal.py`, including
+one deliberately **not mocked**: `TestRealRepoState` runs the real
+`scripts/shadow_engine.ShadowEngine.load()` against this repository's real, currently
+incomplete `artifact/` directory (Blocker #2 — `booster_*.pkl`/`isotonic_*.pkl` are gitignored
+and absent) and asserts `status == "UNAVAILABLE"` with a non-empty `error` — proving today's
+actual behavior end-to-end rather than only asserting it against a mock. The other tests cover:
+status/error caching (loading is attempted once, not retried every call), `evaluate()`
+returning one `Exp107Signal(status="UNAVAILABLE", ...)` per symbol with every score field `None`
+(never fabricated) when unavailable, `Exp107Signal.is_long_fire`'s four truth-table cases, the
+Decision→Exp107Signal field mapping including the numeric `side` (±1.0) → `"LONG"`/`"SHORT"`
+string translation (exercised via a fake engine so this doesn't require real `.pkl` files), and
+`recent_shadow_trades()`'s missing-db/missing-table/row-ordering/limit/never-writes behavior
+against a synthetic SQLite file matching `shadow_trades`'s real key columns.
+
+**Combined run after Phases 7+8**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 50%]
+........................................................................ [100%]
+144 passed in 0.39s
+```
+
+**Design choice flagged for the record**: `Exp107Signal.is_long_fire` is documented as "the
+ONE function in the entire intelligence/ package permitted to answer 'did EXP-107 say ENTER'."
+This is a structural enforcement of `ARCHITECTURE_PLAN.md`'s hard invariant (section 0) that
+EXP-107 must say LONG before anything downstream can ever ENTER — every later phase that needs
+that answer calls this property rather than re-deriving the fired/side condition itself, so
+there is exactly one place in the codebase where that rule could be gotten wrong, and it is
+covered by the four `TestExp107SignalIsLongFire` cases above.

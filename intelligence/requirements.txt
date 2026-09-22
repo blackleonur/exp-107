@@ -4,3 +4,7 @@
 # segfaults in this environment when pandas/polars have been imported in the same process).
 numpy>=1.26
 pytest>=8.0
+joblib>=1.3     # needed by scripts/shadow_engine.py's ShadowEngine.load() (unpickling
+                # booster_*.pkl/isotonic_*.pkl) -- exp107_signal.py imports shadow_engine
+                # lazily, so this is only exercised on the OK path, not by the UNAVAILABLE
+                # tests in test_exp107_signal.py
