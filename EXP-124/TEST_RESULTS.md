@@ -147,3 +147,68 @@ bucket labels should not yet be read as calibrated against any real-world base r
 describe "unusual relative to this symbol's own recent history," nothing more, until the
 feature registry (a later phase) has enough tracked outcomes to say whether that relative
 reading is actually informative.
+
+---
+
+## Phase 6 — liquidity, cross-sectional, and BTC/market regime engines
+
+**Scope**: `intelligence/engines/liquidity_engine.py`, `intelligence/engines/cross_sectional_engine.py`,
+`intelligence/engines/regime_engine.py`.
+
+**Isolation check**: `git diff --stat -- scripts/ artifact/ deploy/ PRE_DECLARATION.md` →
+empty.
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 57%]
+.....................................................                    [100%]
+125 passed in 0.33s
+```
+
+Breakdown of the 45 new tests:
+- `test_liquidity_engine.py` (17) — order-book imbalance on a balanced and a bid-heavy
+  synthetic book (plus `None`/malformed-input handling), funding-rate/basis extraction from a
+  synthetic `premiumIndex` payload (including the partial-data case), open-interest extraction,
+  a volume z-score spike correctly detected against a noisy baseline, a **separate** test
+  proving a perfectly flat (zero-variance) baseline reports `NaN`/no-spike rather than a
+  divide-by-zero crash or a fabricated number, recent-high/recent-low correctly excluding the
+  current bar from its own baseline, and the composed `LiquiditySnapshot` correctly reporting
+  every exchange-sourced field as `None`/`"UNKNOWN"` when no exchange data was supplied at all
+  (this module makes no network calls itself — see the module docstring).
+- `test_cross_sectional_engine.py` (16) — direction-from-return sign in all three cases plus
+  the insufficient-history `None` case, agreement-ratio arithmetic on a unanimous read, a
+  partial split, an exact tie (→ `NEUTRAL`, not an arbitrary tiebreak), `None`-valued symbols
+  excluded from the count, an all-flat book producing a `NaN` ratio rather than a fabricated
+  0/1, and `symbol_alignment()`'s four outcomes (ALIGNED/DIVERGENT/NEUTRAL/UNKNOWN), including
+  the case where the market itself is tied.
+- `test_regime_engine.py` (12) — lag-1 return autocorrelation sign on a constructed trending
+  series (positive) and an alternating series (negative), the `MOMENTUM`/`MEAN_REVERSION`
+  labels attached to those same two constructions, `UNKNOWN` on too little history,
+  `rolling_correlation()` verified against two fixtures built so the expected correlation is
+  exactly ±1 in RETURN space (not price space — see the note below), an uncorrelated
+  short-series `NaN` case, `btc_regime()`'s returned snapshot fields sanity-checked against
+  their declared enums, and `btc_correlations()`'s per-symbol dict shape.
+
+**Correctness note worth keeping** (caught by the tests themselves, not found later): a price
+series that is a pure *affine* transform of another (e.g. `b = 2*a + 5`) does **not** have
+returns that are perfectly linearly related to `a`'s returns, because simple returns are
+ratios, not differences — only a pure *scalar* multiple (`b = k*a`, no additive offset)
+preserves that exactly. The first draft of the correlation tests assumed otherwise and failed
+against the real implementation; the fixtures were corrected to construct the expected return
+relationship directly (via `b[t] = b[t-1] * (1 - ra[t])` for the −1 case) rather than relying on
+a price-space mirror. This is a property of return-space correlation in general, not a defect
+in `rolling_correlation()`.
+
+**Design choices flagged for the record**:
+- `liquidity_engine.compute()` makes no exchange calls itself — every exchange-sourced argument
+  (`book_ticker`, `depth`, `premium_index`, `open_interest`) is optional and independently
+  fetched elsewhere by a later orchestration phase. `liquidation_data` is unconditionally
+  `"UNKNOWN"`: no endpoint for it is used anywhere in this codebase, live or research.
+- `cross_sectional_engine` never produces anything resembling a trade decision — only a ratio
+  and a label. `symbol_alignment()` is the sole function relating one symbol's own read to the
+  market majority, and it never substitutes the majority for the symbol's own value.
+- `regime_engine` does not reproduce or assume EXP-116/117's finding that BTC relates to
+  EXP-107's D signal (that finding's underlying data is Blocker #1, not in this repository) —
+  it computes independent, freshly-defined regime evidence from live data only.
