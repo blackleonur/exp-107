@@ -249,3 +249,220 @@ and this analysis deliberately does not conflate them. Whether the artifact shou
 a production signal source is exactly the question the rest of this session's integration and
 replay work (still pending real bytes being imported) is designed to answer with data, not with
 an inference from model internals alone.
+
+---
+
+## Part II — deeper follow-up analysis (raw output distribution, full trees, embedded version strings)
+
+A follow-up request asked for the complete leaf-value/split-gain structure (not just the top-8
+by gain), the raw model output distribution, and the exact library versions embedded in the
+files themselves, plus a structured A–G report. This section adds that detail; Part I above is
+unchanged and still accurate. All numbers below come from `dump_model()`, `model_to_string()`,
+and a raw byte scan of the pickle files for embedded strings — no prediction was run against
+external data (none is available in this session), and no file was modified.
+
+### A. Artifact verification
+
+- 12/12 files present in the uploaded archive; 12/12 SHA-256 match `artifact/artifact.json`'s
+  recorded provenance in full (64 characters, re-confirmed with a fresh hash computation for
+  this follow-up — identical to the Part I result).
+- Every `booster_{t}.pkl` unpickles to `lightgbm.sklearn.LGBMClassifier` wrapping exactly one
+  `lightgbm.basic.Booster`; every `isotonic_{t}.pkl` unpickles to
+  `sklearn.isotonic.IsotonicRegression`. No load error, no truncation, no type mismatch across
+  any of the 12 files.
+- **Embedded library versions, found as literal strings in the raw pickle bytes** (not just
+  inferred from a successful load): both `_sklearn_version` and the literal string `1.9.0`
+  appear in every one of the 12 files — this is scikit-learn's own automatic version-stamping
+  of pickled estimators, and it reads **scikit-learn 1.9.0** consistently across all 12 files.
+  The LightGBM side embeds `version=v4` in its internal text model format (LightGBM's own
+  model-file-format version tag, not a literal pip package version number — LightGBM does not
+  embed its pip version string in the model dump) together with module paths
+  `lightgbm.sklearn` / `lightgbm.basic`, both current (non-deprecated) LightGBM module names.
+  Loading was verified successful under `lightgbm==4.7.0` (installed for this analysis) — the
+  same version this repository's own code comments (`scripts/shadow_engine.py`,
+  `scripts/R2_gate2_replay.py`) independently state the system requires; nothing observed
+  contradicts that.
+- **Internal consistency check, passed**: every tree's `leaf_count` values sum exactly to its
+  root `internal_count` (561,600 for all six horizons — see §B), and every model dump ends with
+  the `end of trees` marker LightGBM writes on a complete, non-truncated model. No corruption
+  found by any check performed.
+- **561,600 rows at the root of every one of the six trees** matches, exactly, the TRAIN
+  row count `scripts/R1_freeze_artifact.py`'s own code comment (line 49) cites as the
+  **correct** value — as opposed to a historically buggy 474,000-row count that same comment
+  describes as a past mistake (from two mis-set epoch constants) that was caught and fixed
+  before this artifact could have been produced. This is a positive, artifact-derived signal
+  that the freeze this file reflects is the corrected one, not the buggy one — read directly
+  from the tree's own row-count bookkeeping, not assumed.
+
+### B. Model architecture
+
+Confirmed identical across all six `booster_{t}.pkl` files (19/19 `get_params()` keys):
+`boosting_type=gbdt`, `objective=None` (→ binary log-loss), `n_estimators=300` (configured),
+`num_leaves=31` (cap), `max_depth=5`, `learning_rate=0.05`, `min_child_samples=20`,
+`subsample=0.8`, `subsample_freq=0`, `colsample_bytree=0.8`, `reg_alpha=0.0`, `reg_lambda=0.0`,
+`min_split_gain=0.0`, `min_child_weight=0.001`, `class_weight="balanced"`, `random_state=42`.
+
+**What was actually realized, per horizon** (from `dump_model()`/`model_to_string()` directly):
+
+| t | trees | leaves | depth | train rows (root) | root split feature | root threshold | root branch split |
+|---|---|---|---|---|---|---|---|
+| 10  | 1 | 18 | 5 | 561,600 | idx 66  | `inf` | 95.5% / 4.5% |
+| 30  | 1 | 18 | 5 | 561,600 | idx 0   | `inf` | 95.5% / 4.5% |
+| 60  | 1 | 18 | 5 | 561,600 | idx 112 | `inf` | 95.5% / 4.5% |
+| 120 | 1 | 19 | 5 | 561,600 | idx 22  | `inf` | 95.5% / 4.5% |
+| 240 | 1 | 18 | 5 | 561,600 | idx 116 | `inf` | 95.5% / 4.5% |
+| 480 | 1 | 17 | 5 | 561,600 | idx 44  | `inf` | 95.5% / 4.5% |
+
+Two facts not visible in Part I's summary view:
+
+1. **Every one of the six trees' ROOT split has threshold `inf`, read directly from the raw
+   text model** (`model_to_string()`, not the JSON `dump_model()` view, which serializes the
+   same value as `1e+300` — resolving Part I §3.4's flagged uncertainty precisely: it is
+   LightGBM's own encoding of an infinite threshold, not an extreme value on a real feature
+   reading). A `<= inf` test is true for every finite value of any feature — so the root split's
+   TRUE/FALSE routing for ordinary rows is governed entirely by LightGBM's
+   default-direction/missing-value-routing convention (`decision_type` values `8`/`10`/`2`
+   observed across the six trees), not by the magnitude of the chosen feature. **This root split
+   isolates a fixed ~4.5% of rows (the same proportion, to within a few hundredths of a percent,
+   in all six independently-trained trees) into one branch and the remaining ~95.5% into the
+   other**, before any ordinary numeric comparison happens. What specifically characterizes that
+   4.5% (a data condition such as missing/NaN values in the root feature, or some other shared
+   property) is **not determined by this analysis** — establishing that would require the
+   original training data, which this session does not have; the finding here is limited to
+   what the tree structure itself shows.
+2. Realized leaf count (17–19) is well below the configured cap of 31, consistent with a
+   depth-5 constraint (max 32 leaves) plus the effect of the near-degenerate root split above
+   removing much of the tree's effective branching budget from ordinary-value routing.
+
+### C. Feature analysis
+
+Full split-gain distribution per tree (not just the top-8), summed and reported:
+
+| t | # splits | max gain (root) | sum of all gains | root's share of total gain |
+|---|---|---|---|---|
+| 10  | 17 | 25,351.6 | 30,023.2 | 84.4% |
+| 30  | 17 | 25,331.6 | 30,096.3 | 84.2% |
+| 60  | 17 | 25,314.5 | 30,174.2 | 83.9% |
+| 120 | 18 | 25,326.1 | 29,768.4 | 85.1% |
+| 240 | 17 | 25,327.5 | 30,103.6 | 84.1% |
+| 480 | 16 | 25,335.8 | 29,799.5 | 85.0% |
+
+(These percentages are slightly lower than Part I's 84.6–86.7% "top-8 gain share" because they
+are now computed against the TRUE full-tree gain sum, including every split down to
+near-zero-gain leaves at the bottom of each tree, rather than only the top 8 entries.)
+
+Root-split (dominant) feature per horizon, mapped through `d_features.py`'s own
+`feature_names()` — unchanged from Part I, restated for completeness: `own_ret_1` (t=10),
+`rskew_30` (t=30), `relstr_60` (t=60), `rskew_120` (t=120), `own_ret_180` (t=240), `rskew_480`
+(t=480). `feature_infos` recorded in the raw model text (the min/max range LightGBM saw for
+each feature at training time) confirms several engineered features carry very large numeric
+ranges at training time (e.g. one feature's recorded range is `[0 : 6,861,329]`, another
+`[-2,738.75 : 5,327,955]`) — consistent with `d_features.py`'s own `1e4`/`1e10` scaling
+multipliers on features like `amihud`/`kyle`, and read directly from the artifact rather than
+assumed from the source code alone.
+
+### D. Calibration analysis
+
+Restated from Part I with the leaf-output cross-check now available: the isotonic calibrators'
+fitted domains (`X_thresholds_`, e.g. `[0.4983, 0.5091]` for t=10) sit almost exactly inside the
+range of `sigmoid(leaf_value)` computed directly from each tree's own leaves (t=10:
+`[0.475021, 0.513922]`, mean `0.501490`, 17 of 18 leaves producing distinct probability values).
+This is an independent, artifact-internal cross-check — the calibrator's fitted domain and the
+booster's actual achievable output range agree, which is exactly what should be true of a
+correctly-paired calibrator and confirms the two files for each horizon are a consistent pair,
+not accidentally mismatched.
+
+Per-horizon leaf-output (raw model output) summary:
+
+| t | min sigmoid(leaf) | max sigmoid(leaf) | mean sigmoid(leaf) | distinct values | notable leaves |
+|---|---|---|---|---|---|
+| 10  | 0.475021 | 0.513922 | 0.501490 | 17 of 18 | 2 leaves pinned to raw value exactly `-0.1` |
+| 30  | 0.475021 | 0.514520 | 0.499898 | 17 of 18 | 2 leaves at `-0.1` |
+| 60  | 0.475021 | 0.516698 | 0.499069 | 17 of 18 | 2 leaves at `-0.1` |
+| 120 | 0.475021 | 0.517189 | 0.497750 | 17 of 19 | 3 leaves at `-0.1` |
+| 240 | 0.475021 | 0.514188 | 0.500192 | 17 of 18 | 2 leaves at `-0.1` |
+| 480 | 0.475021 | 0.518391 | 0.501731 | 17 of 17 (all distinct) | none at exactly `-0.1` |
+
+The recurring exact raw leaf value `-0.1` across five of the six trees (2–3 leaves each) is
+reported as an observed fact; this analysis does not determine its cause (it could reflect a
+regularization/clipping floor, a very-low-sample leaf, or a coincidence across independently
+trained trees) since doing so would require re-deriving LightGBM's internal gradient/hessian
+computation for those specific leaves, which is beyond what the artifact file alone supports.
+
+### E. Öğrenme kalitesi (learning quality) — measured, not judged
+
+Every one of the six `_best_score` values (the validation `binary_logloss` at the iteration
+early stopping selected, read directly from each `LGBMClassifier` object):
+
+| t | validation binary_logloss | `ln(2)` (no-skill p=0.5 baseline) | difference |
+|---|---|---|---|
+| 10  | 0.693243 | 0.693147 | +0.000096 |
+| 30  | 0.693128 | 0.693147 | −0.000019 |
+| 60  | 0.693287 | 0.693147 | +0.000140 |
+| 120 | 0.693306 | 0.693147 | +0.000159 |
+| 240 | 0.693226 | 0.693147 | +0.000079 |
+| 480 | 0.693206 | 0.693147 | +0.000059 |
+
+All six differences are on the order of 1–2×10⁻⁴, far smaller than would be expected to be
+distinguishable from sampling noise on a validation set of this apparent size (the training
+slice alone is 561,600 rows; the validation slice, per `R1_freeze_artifact.py`, is drawn from a
+separate, later date range). **On this specific metric, measured at the specific point where
+LightGBM's own early-stopping criterion chose to stop training, all six models are
+statistically indistinguishable from always predicting `p=0.5`.** This is the plain reading of
+the number; §F and §G below are where its implications and limits are addressed, deliberately
+kept separate from this measurement.
+
+### F. EXP-107 signal/gate açısından ne anlama geliyor
+
+This is a distinct question from §E, and the two must not be conflated:
+
+- `scripts/shadow_engine.py`'s entry gate does **not** use `binary_logloss`, and does **not**
+  use the raw or calibrated probability directly. It uses `comb = 0.5·rank(|raw−0.5|) +
+  0.5·rank(RV30)`, where both ranks are computed against a pooled VALIDATION reference
+  distribution (`ref_model.npy`, `ref_rv30.npy` — already hash-verified present and authentic
+  in every prior check this session), gated at the 99.0th percentile of `comb`.
+- A model whose raw output barely deviates from 0.5 in absolute probability terms (§D, §E) can
+  still, in principle, produce a *rank* that occasionally reaches an extreme percentile — this
+  gate was specifically designed around `|raw−0.5|` (a confidence magnitude, not the direction
+  or calibration of that confidence) exactly because the raw model's absolute probability
+  range is this narrow, per `CODEBASE_MAP.md` §2.1 and §3's reading of the surrounding code.
+  Whether that rank-based signal is actually informative (i.e., whether firing at the top 1% of
+  `|raw-0.5|` picks out real, tradable structure) is **not answered by anything in this
+  document** — it requires either (a) reproducing the VALIDATION-slice evaluation the frozen
+  reference distributions were built from, or (b) a genuine forward/replay test, neither of
+  which this analysis performed.
+- What this document DOES establish, directly relevant to interpreting any future signal from
+  this artifact: the underlying classifier is a single shallow tree per horizon whose split
+  structure is dominated (~84–85% of gain) by one feature, with a near-degenerate,
+  threshold-`inf` root split that routes a fixed ~4.5% of rows by a mechanism this analysis
+  could not determine from the artifact alone (§B.1). Any future signal from this system is a
+  signal from THAT specific structure — not from an ensemble of hundreds of trees a
+  300-estimator configuration might suggest at a glance.
+
+### G. Henüz kanıtlanmamış noktalar (still unproven)
+
+Explicitly not established by this document, listed so a later report does not silently assume
+any of them:
+
+1. Why the ~4.5%/95.5% root split occurs identically across all six independently-trained
+   horizons (§B.1) — requires the original training data or feature-generation code path this
+   session does not have access to.
+2. Why 2–3 leaves per tree land on the exact raw value `-0.1` in five of six horizons (§D) —
+   requires re-deriving LightGBM's internal per-leaf gradient/hessian computation.
+3. Whether the frozen `comb`/`PINNED_THRESHOLD` gate (§F), which operates on RANKS rather than
+   raw probabilities, produces a real, cost-aware, out-of-sample edge — this requires live or
+   replayed decision data, not model-internals analysis, and remains exactly as unanswered as
+   `EXP-124/FINAL_REPORT.md` §13 already states.
+4. Whether this specific artifact (the one just analyzed) is bit-identical to the one EXP-105's
+   38 historical trades and the `verification.json`/`gate2.json` evidence at repo root were
+   originally evaluated against — the SHA-256 match against `artifact.json`'s recorded values
+   (§A) is strong evidence they are the same artifact, but this analysis did not re-run
+   `scripts/R0_verify.py`/`R2_gate2_replay.py` against it to reproduce those historical numbers
+   directly (those scripts remain blocked by `CODEBASE_MAP.md` Blocker #3, the missing
+   `tradebot` package and historical feature archive, independent of this artifact question).
+
+**No overall verdict ("model is good" / "model is bad") is given, per the task instruction.**
+Every claim above is tied to a specific, reproducible measurement; §E's finding
+(validation-log-loss parity with the no-skill baseline) and §F's finding (the actual gate
+operates on a different statistic than the one just measured) are both true simultaneously and
+are reported as such, without resolving them into a single summary judgment.
