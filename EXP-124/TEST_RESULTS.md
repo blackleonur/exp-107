@@ -388,3 +388,53 @@ Breakdown of the 16 new tests:
   a high `rank_opportunities()` position are both still only INPUTS to the eventual Decision
   Engine (a later phase), consistent with the brief's "do NOT automatically enter every
   opportunity" instruction.
+
+---
+
+## Phase 11 — risk + portfolio engine
+
+**Scope**: `intelligence/risk/portfolio_state.py`, `intelligence/risk/risk_engine.py`.
+
+**Isolation check**: empty.
+
+**Unit tests**:
+
+```
+$ python3 -m pytest intelligence/tests/unit -q
+........................................................................ [ 34%]
+........................................................................ [ 68%]
+...................................................................      [100%]
+211 passed in 0.53s
+```
+
+Breakdown of the 22 new tests:
+- `test_portfolio_state.py` (11) — open/close tracking and the resulting `open_notional_usd`/
+  `available_margin_usd` arithmetic, a duplicate open on the same symbol raising rather than
+  silently overwriting, an over-notional open raising AND leaving the book unmodified (no
+  partial-apply), direction- and symbol-level exposure queries, and five
+  `correlated_exposure_usd` cases: a correlated position counted, a below-threshold position
+  excluded, an unmeasured correlation contributing `0.0` (never guessed), the symbol's own
+  position excluded from its own correlated-exposure sum, and a negative correlation still
+  counted by magnitude (co-movement risk is symmetric).
+- `test_risk_engine.py` (11) — `estimate_sl_equivalent_bp()`'s scaling and its `NaN`/`None`/
+  zero/negative inputs all honestly producing `NaN` rather than a fabricated fallback distance;
+  a basic assessment with no competing exposure; a `NaN` confirmation score propagating
+  honestly into both `expected_reward_bp` and `net_expected_bp` rather than being silently
+  treated as zero; correlated exposure producing the expected proportional penalty; the penalty
+  provably capped at `1.0` even with multiple large correlated positions; portfolio context
+  (`open_notional_usd`, `available_margin_usd`) carried through unchanged into the assessment;
+  and an unavailable ATR producing a `NaN` SL estimate without affecting the (independently
+  computed) expected-reward figure.
+
+**Design choices flagged for the record**:
+- `PortfolioState` models **no leverage anywhere** — `available_margin_usd` is starting balance
+  minus notional 1:1, matching EXP-107's own leverage-free design (`CODEBASE_MAP.md` section
+  2.5). This is real paper bookkeeping (raises on over-commitment), not just a reporting number.
+- `risk_engine.assess()`'s `expected_reward_bp` is explicitly documented as a PROXY (a fixed,
+  auditable scale from `confirmation_score` to basis points), not a calibrated return forecast
+  — no calibration for that exists anywhere in this repository (`CODEBASE_MAP.md` Blocker #1).
+  Likewise `estimated_sl_loss_bp` is explicitly labeled an estimate for ranking purposes only:
+  EXP-107 itself has no real stop-loss to base it on (fixed 24h time exit only).
+  Risk management stays structurally separate from signal generation: nothing in this module
+  can promote a candidate into a decision — it only ever feeds `ranking.py`'s `risk_penalty`
+  input and, later, the Decision Engine's RISK field.
